@@ -1,6 +1,6 @@
 # HipHop MIDI Generator
 
-**EN** — A cross-platform **VST3** MIDI generator for **R&B, Trap and Hip-Hop**: chords, melodies and 808 lines that are
+**EN** — A cross-platform **VST3** MIDI generator specialised in **Trap and Hip-Hop** (plus R&B): chords, melodies and 808 lines that are
 **guaranteed to stay inside the chosen scale**, shaped by style blending, complexity, swing and humanisation, with a
 text-prompt AI mode (Gemini or any OpenAI-compatible model) and an MCP server.
 

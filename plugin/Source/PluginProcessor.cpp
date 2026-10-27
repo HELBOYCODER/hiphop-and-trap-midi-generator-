@@ -44,9 +44,9 @@ AudioProcessorValueTreeState::ParameterLayout HipHopMidiProcessor::createLayout(
     p.push_back (std::make_unique<AudioParameterInt> (ParameterID { "bpm", 1 }, "BPM", 40, 220, 140));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "syncBpm", 1 }, "Use Host BPM", false));
     auto pct = [] { return NormalisableRange<float> (0.0f, 1.0f, 0.001f); };
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "rnb", 1 }, "Style R&B", pct(), 1.0f));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "trap", 1 }, "Style Trap", pct(), 0.0f));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "hiphop", 1 }, "Style Hip-Hop", pct(), 0.0f));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "rnb", 1 }, "Style R&B", pct(), 0.15f));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "trap", 1 }, "Style Trap", pct(), 1.0f));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "hiphop", 1 }, "Style Hip-Hop", pct(), 0.3f));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "complexity", 1 }, "Complexity", pct(), 0.5f));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "humanize", 1 }, "Humanize", pct(), 0.3f));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "swing", 1 }, "Swing", pct(), 0.0f));
@@ -54,7 +54,7 @@ AudioProcessorValueTreeState::ParameterLayout HipHopMidiProcessor::createLayout(
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "scaleLock", 1 }, "Scale Lock", true));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "chords", 1 }, "Chords", true));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "melody", 1 }, "Melody", true));
-    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "bass", 1 }, "808 Bass", false));
+    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "bass", 1 }, "808 Bass", true));
     p.push_back (std::make_unique<AudioParameterInt> (ParameterID { "octave", 1 }, "Melody Octave", 3, 7, 5));
     p.push_back (std::make_unique<AudioParameterInt> (ParameterID { "seed", 1 }, "Seed", 0, 99999, 1));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "playback", 1 }, "Playback", true));

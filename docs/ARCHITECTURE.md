@@ -23,6 +23,13 @@ tests/, plugin/Tests/, tools/dataset/tests/
 
 Pentatonic/blues note: the melody uses the pentatonic/blues set; chords come from the parent major/minor scale, which is a superset (except the blues ♭5, which only the melody may use).
 
+## Trap / hip-hop melody engine
+
+The plugin defaults to trap. For trap and hip-hop the melody is not a random walk over the scale; one of three producer idioms is chosen per idea:
+**arp** (plucky chord-tone arpeggios that follow the progression, with dropped notes for air), **bell** (sparse, high, call-and-response calls that resolve on the root) and **hook** (a 4-note cell on a small palette, repeated with a changed tail, over a trap/boom-bap rhythm). R&B keeps the flowing line.
+`tools/eval/melody_metrics.py` measures the result. 80 ideas each, minor, before -> after: share of notes inside scale-run patterns (the "nursery-rhyme" feel) trap 0.15 -> 0.00, hip-hop 0.15 -> 0.00; rest ratio (space) trap 0.17 -> 0.26; distinct pitch classes per 4 bars 6.6 -> 4.8 (tighter, more memorable hooks).
+These are metrics, not a listening test: judge by ear and tell me what to push further. The big upgrade is still real professional trap/hip-hop MIDI as data.
+
 ## What is *not* in the box (please read)
 
 - **Built-in dataset.** POP909 (MIT) was ingested (2 897 files) and is compiled in as `data/patterns.pop909.json`: 140 progressions, 60 rhythms, 60 motifs, tagged `rnb`. It is *pop*, not hip-hop/trap, so it mostly improves R&B-leaning chords and melodies; trap/hip-hop quality will improve once you supply licensed hip-hop MIDI (e.g. the Cymatics packs you have a licence for - upload them or drop them in `data/raw/` and run `ingest.py`). I did not scrape third-party re-upload sites.

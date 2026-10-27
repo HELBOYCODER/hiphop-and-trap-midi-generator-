@@ -160,8 +160,128 @@ Result generate(const Request& in, const PatternLibrary& lib) {
         }
     }
 
-    // ---- melody -----------------------------------------------------------------------------
-    if (rq.melody) {
+    // ---- melody archetype -------------------------------------------------------------------------
+    // R&B keeps the flowing line below. Trap / hip-hop use producer idioms instead: plucky chord-tone
+    // arpeggios, sparse high "bell" calls, and short repeated hooks built on a small palette. These are
+    // deliberately not scale runs: repetition, leaps, space and held resolutions read as mature.
+    enum class Arch { flow, arp, bell, hook };
+    Arch arch = Arch::flow;
+    if (rq.melody && rng.uni() >= mix.rnb) {
+        double t = mix.trap, h = mix.hiphop;
+        if (t + h <= 1e-9) t = 1;
+        std::vector<double> w = {t * 0.35 + h * 0.20, t * 0.30 + h * 0.15, t * 0.35 + h * 0.65};
+        arch = (Arch) (1 + (int) rng.pick(w));
+    }
+
+    if (rq.melody && arch != Arch::flow) {
+        const int tonic = 12 * (rq.melodyOctave + 1) + rq.root;
+        const int lo = tonic - 5, hi = tonic + 19;
+        auto pitchOf = [&](int degree) { return sc.degreeToPitch(tonic, degree); };
+        auto pcIn = [](int pitch, const std::vector<int>& pcs) {
+            for (int v : pcs) if (((pitch - v) % 12 + 12) % 12 == 0) return true;
+            return false;
+        };
+        auto chordPcs = [](const Chord& c) { std::vector<int> v; for (int p : c.pitches) v.push_back(((p % 12) + 12) % 12); return v; };
+        auto add = [&](double start, double len, int pitch, int vel) {
+            Note n; n.pitch = sc.snap(pitch); n.start = start; n.length = std::max(0.8 * kTicksPerStep, len);
+            n.velocity = std::max(1, std::min(124, vel)); n.channel = kMelody;
+            res.notes.push_back(n);
+        };
+        const int setSize = (int) sc.def().intervals.size();
+
+        if (arch == Arch::arp) {
+            static const std::vector<std::vector<int>> shapes = {
+                {0, 1, 2, 1}, {0, 2, 1, 2}, {0, 1, 2, 3, 2, 1}, {2, 1, 0, 1}, {0, 0, 2, 1}, {0, 2, 3, 2}, {1, 0, 2, 0}};
+            auto shape = shapes[(size_t) rng.range(0, (int) shapes.size() - 1)];
+            const double drop = 0.10 + 0.25 * (1.0 - cx);
+            const bool sixteenth = rng.chance(0.25 + 0.5 * cx);
+            for (int bar = 0; bar < rq.bars; ++bar) {
+                const Segment& sg = segAt((double) bar * kTicksPerBar);
+                auto pcs = chordPcs(sg.chord);
+                std::vector<int> ladder;
+                for (int p = lo; p <= hi; ++p) if (pcIn(p, pcs)) ladder.push_back(p);
+                if (ladder.size() < 3) continue;
+                const bool lastBar = bar == rq.bars - 1;
+                size_t base = ladder.size() / 3;
+                size_t pos = 0;
+                const int grid = sixteenth && bar % 2 == 1 ? 1 : 2;
+                for (int st = 0; st < 16; st += grid) {
+                    if (lastBar && st >= 8) break;
+                    if (st > 0 && rng.chance(drop)) { ++pos; continue; }
+                    size_t idx = std::min(ladder.size() - 1, base + (size_t) shape[pos % shape.size()]);
+                    ++pos;
+                    int vel = (st % 4 == 0 ? 98 : 80) + rng.range(-4, 4);
+                    add((double) bar * kTicksPerBar + st * kTicksPerStep, std::max(1, grid - 1) * kTicksPerStep * 0.9, ladder[idx], vel); // plucky: leaves air
+                }
+                if (lastBar) {  // resolve on the root, held
+                    int rootP = tonic; while (rootP < lo + 5) rootP += 12;
+                    add((double) bar * kTicksPerBar + 8 * kTicksPerStep, 7 * kTicksPerStep, rootP, 100);
+                }
+            }
+        } else if (arch == Arch::bell) {
+            static const std::vector<std::vector<double>> hits = {
+                {0, 6, 10}, {0, 8, 11}, {2, 8, 14}, {0, 3, 8}, {0, 7, 12}, {4, 10, 14}, {0, 10}};
+            // call-and-response palette: root, 3rd/b3, 5th, octave; phrygian/harmonic minor add their colour tone
+            std::vector<int> palette = {0, 2, 4, setSize};
+            if (rq.scale == findScale("phrygian") || rq.scale == findScale("phrygian_dominant")) palette.push_back(1);
+            if (rq.scale == findScale("harmonic_minor")) palette.push_back(6);
+            std::vector<int> call;
+            auto hitsA = hits[(size_t) rng.range(0, (int) hits.size() - 1)];
+            for (size_t i = 0; i < hitsA.size(); ++i) call.push_back(palette[(size_t) rng.range(0, (int) palette.size() - 1)]);
+            auto hitsB = rng.chance(0.5) ? hitsA : hits[(size_t) rng.range(0, (int) hits.size() - 1)];
+            for (int bar = 0; bar < rq.bars; ++bar) {
+                const bool answer = bar % 2 == 1;
+                const bool lastBar = bar == rq.bars - 1;
+                auto steps = answer ? hitsB : hitsA;
+                for (size_t i = 0; i < steps.size(); ++i) {
+                    int deg = call[i % call.size()];
+                    if (answer && i + 1 == steps.size()) deg = palette[(size_t) rng.range(0, 2)];     // answer ends differently
+                    if (bar % 4 == 3 && i + 1 == steps.size()) deg = 0;                               // phrase resolves
+                    double st = steps[i];
+                    double len = (i + 1 < steps.size() ? steps[i + 1] - st : 16 - st) * kTicksPerStep * 0.95;
+                    int pitch = pitchOf(deg + setSize);                                               // an octave above the tonic
+                    while (pitch > hi) pitch -= 12;
+                    if (lastBar && i + 1 == steps.size()) { pitch = tonic + 12; len = (16 - st) * kTicksPerStep; }
+                    add((double) bar * kTicksPerBar + st * kTicksPerStep, std::min(len, 4.0 * kTicksPerStep), pitch, 92 - (int) i * 3 + rng.range(-3, 3));
+                }
+            }
+        } else { // hook: 4-note cell on a small palette, sequenced A A' A B over a library rhythm
+            std::vector<int> palette = {0, 2, 4, -1, 1};
+            if (rng.chance(0.5)) palette = {0, 2, 3, 4, -3};
+            std::vector<int> cell;
+            int prev = 0;
+            for (int i = 0; i < 4; ++i) {
+                int d = palette[(size_t) rng.range(0, (int) palette.size() - 1)];
+                if (i > 0 && (std::abs(d - prev) == 1 ? rng.chance(0.8) : rng.chance(0.3))) d = prev;  // hooks repeat; they do not walk the scale
+                cell.push_back(d); prev = d;
+            }
+            const Rhythm* rhA = pickRhythm(1, 3.0 + 2.0 * cx);
+            const Rhythm* rhB = pickRhythm(1, 2.5 + 2.0 * cx);
+            if (!rhA) rhA = rhB;
+            if (!rhA) rhA = &lib.rhythms.front();
+            if (!rhB) rhB = rhA;
+            for (int bar = 0; bar < rq.bars; ++bar) {
+                const bool b = bar % 4 == 3;
+                const Rhythm* rh = b ? rhB : rhA;
+                for (size_t i = 0; i < rh->notes.size(); ++i) {
+                    const auto& rn = rh->notes[i];
+                    int deg = cell[i % cell.size()] + (bar % 4 == 2 && i > 0 ? 1 : 0);      // third bar nudges up
+                    if (bar % 4 == 1 && i + 1 == rh->notes.size()) deg = cell[0] + 2;        // A' changes only the tail
+                    const bool fin = (bar % 4 == 3 || bar == rq.bars - 1) && i + 1 == rh->notes.size();
+                    if (fin) deg = 0;
+                    int pitch = pitchOf(deg);
+                    while (pitch > hi) pitch -= 12;
+                    while (pitch < lo) pitch += 12;
+                    double st = (double) bar * kTicksPerBar + rn.step * kTicksPerStep;
+                    double len = rn.len * kTicksPerStep * (fin ? 1.8 : 0.9);
+                    add(st, std::min(len, (double) (bar + 1) * kTicksPerBar - st), pitch, rn.vel + (i == 0 ? 8 : -2) + rng.range(-3, 3));
+                }
+            }
+        }
+    }
+
+    // ---- melody (flowing line: R&B) -----------------------------------------------------------
+    if (rq.melody && arch == Arch::flow) {
         const int tonic = 12 * (rq.melodyOctave + 1) + rq.root;       // tonic pitch near octave centre
         const int lo = tonic - 7, hi = tonic + 14;                       // playable window
         auto pitchOf = [&](int degree) { return sc.degreeToPitch(tonic, degree); };
