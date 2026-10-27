@@ -1,0 +1,10 @@
+build/
+dist/
+*.pyc
+__pycache__/
+.DS_Store
+# datasets and downloads are never committed (licensing)
+data/raw/
+data/telegram/
+*.session
+patterns.local.json
