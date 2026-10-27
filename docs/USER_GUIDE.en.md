@@ -54,11 +54,16 @@ The model picks settings by calling the plugin's tools; the engine writes the no
 - **OpenAI-compatible**: choose it, set *Endpoint* (e.g. Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`), *Model* (e.g. `llama3.1`) and, if needed, a key. The model must support tool calling.
 - The key is saved in `settings.xml` in your user application-data folder (not in DAW projects). Your prompt and the current settings are sent to the provider you choose.
 
+### The AI knows the plugin (and explains itself)
+The AI calls the `style_guide` tool first. It holds 12 style recipes (dark/eerie/melodic trap, trap soul, smooth R&B, neo soul, late-night R&B, boom bap, lo-fi, west coast, cinematic, bright R&B), the character of each scale and what every knob does, in English and Persian. The answer tells you which key/scale/BPM/settings were chosen, **why**, and how to tune it further.
+
+**Fine-tuning:** `tools/finetune/make_dataset.py` turns the engine's own knowledge into a bilingual supervised-tuning set (prompt → `generate_midi` arguments + explanation), in Gemini or OpenAI chat format: `python3 tools/finetune/make_dataset.py --cli build/hhmg-cli --format gemini --out hhmg_tuning.jsonl`. Run the tuning job in your own Google Cloud / provider account. Without tuning, the system prompt + `style_guide` already give the model this knowledge.
+
 ## 5. MCP server (use the engine from Claude, Gemini CLI, Cursor…)
 
 `hhmg-cli` (built with the project; in `dist/`) speaks the Model Context Protocol over stdio.
 
-Tools: `list_scales`, `scale_notes`, `snap_to_scale`, `check_in_scale`, `list_patterns`, `list_progressions`, `generate_midi`
+Tools: `style_guide`, `list_scales`, `scale_notes`, `snap_to_scale`, `check_in_scale`, `list_patterns`, `list_progressions`, `generate_midi`
 (`generate_midi` accepts `output_path` to write a `.mid`).
 
 ```jsonc
@@ -90,7 +95,7 @@ export TG_API_ID=... TG_API_HASH=...
 python3 tools/dataset/telegram_fetch.py --channel pulseestore --message 2019 --album --out data/telegram
 python3 tools/dataset/ingest.py data/telegram --out patterns.json
 ```
-Put `patterns.json` at `~/Documents/HipHopMidiGenerator/patterns.json` (loaded on start) or use **Load dataset…** in the plugin. Learned progressions, rhythms and motifs are *added* to the built-in set and used according to the Style knobs.
+The plugin already contains the **POP909** profile (MIT, `data/patterns.pop909.json`, see `data/README.md`). Put your own `patterns.json` at `~/Documents/HipHopMidiGenerator/patterns.json` (loaded on start) or use **Load dataset…** in the plugin. Learned progressions, rhythms and motifs are *added* to the built-in set and used according to the Style knobs.
 What is extracted: key (Krumhansl profiles), a diatonic chord degree per bar, one-bar onset grids of the melody, and short scale-degree contours. Original notes are not stored. Use material you are licensed to use; see `docs/ARCHITECTURE.md`.
 
 ## 7. Troubleshooting

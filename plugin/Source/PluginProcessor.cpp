@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <BinaryData.h>
 #include <hhmg/MidiFile.h>
 #include <cmath>
 #include <map>
@@ -68,7 +69,8 @@ HipHopMidiProcessor::HipHopMidiProcessor()
 {
     for (int& h : heldMap) h = -1;
     auto lib = std::make_shared<hhmg::PatternLibrary> (hhmg::PatternLibrary::builtin());
-    String msg;
+    try { lib->mergeJson (hhmg::Json::parse (std::string (BinaryData::patterns_pop909_json, (size_t) BinaryData::patterns_pop909_jsonSize))); }
+    catch (const std::exception&) {}
     auto def = defaultDatasetFile();
     if (def.existsAsFile())
     {
@@ -314,7 +316,7 @@ bool HipHopMidiProcessor::loadDataset (const File& f, String& message)
 {
     try
     {
-        auto lib = std::make_shared<hhmg::PatternLibrary> (hhmg::PatternLibrary::builtin());
+        auto lib = std::make_shared<hhmg::PatternLibrary> (*std::atomic_load (&library)); // keep embedded + builtin
         auto before = *lib;
         lib->mergeJson (hhmg::Json::parse (f.loadFileAsString().toStdString()));
         message = "Loaded " + f.getFileName() + ": +" + String ((int) (lib->progressions.size() - before.progressions.size())) + " progressions, +"

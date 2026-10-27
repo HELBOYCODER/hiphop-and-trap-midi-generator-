@@ -1,3 +1,4 @@
+#include "hhmg/Guide.h"
 #include "hhmg/Tools.h"
 #include <cstdio>
 #include <cstdlib>
@@ -70,6 +71,23 @@ int main() {
       Json rt = Json::parse(lib.toJson().dump());
       PatternLibrary lib2; lib2.mergeJson(rt);
       CHECK(lib2.rhythms.size() == lib.rhythms.size(), "library JSON round trip"); }
+
+    // Style guide: every recipe names a real scale, and generating from it stays in key
+    { for (const auto& rc : recipes()) {
+          int sc = findScale(rc.scale);
+          CHECK(sc >= 0, "recipe %s scale", rc.id.c_str());
+          CHECK(rc.bpmMin < rc.bpmMax && rc.bars >= 1, "recipe %s ranges", rc.id.c_str());
+          for (int d : rc.progression) CHECK(d >= 1 && d <= 7, "recipe %s degrees", rc.id.c_str());
+          Request rq; rq.scale = sc; rq.mix = {rc.rnb, rc.trap, rc.hiphop}; rq.complexity = rc.complexity; rq.humanize = rc.humanize;
+          rq.swing = rc.swing; rq.bass = rc.bass; rq.bars = rc.bars; rq.progression = rc.progression; rq.bpm = rc.bpmMin;
+          CHECK(countOutOfScale(generate(rq, lib)) == 0, "recipe %s in scale", rc.id.c_str());
+      }
+      Json g = callTool("style_guide", Json::parse("{\"query\":\"dark trap\"}"), lib);
+      CHECK(g["ok"].boolean() && g["matches"].at(0)["id"].str() == "dark_trap", "style_guide ranks dark_trap first: %s", g["matches"].at(0)["id"].str().c_str());
+      Json fa = callTool("style_guide", Json::parse("{\"query\":\"ترپ تاریک\"}"), lib);
+      CHECK(fa["matches"].at(0)["id"].str() == "dark_trap", "persian query");
+      Json n = callTool("style_guide", Json::parse("{\"query\":\"smooth romantic r&b\"}"), lib);
+      CHECK(n["matches"].at(0)["id"].str() == "rnb_smooth", "smooth rnb"); }
 
     // MIDI file header
     { Request rq; Result r = generate(rq, lib); auto b = writeMidi(r);

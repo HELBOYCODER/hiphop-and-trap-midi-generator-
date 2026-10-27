@@ -57,11 +57,16 @@ cmake -S . -B build -DHHMG_BUILD_PLUGIN=OFF   # فقط موتور + CLI + تست
 - **سازگار با OpenAI**: این گزینه را انتخاب کنید و *Endpoint* (مثلاً Ollama: `http://localhost:11434/v1` ، LM Studio: `http://localhost:1234/v1`) و *Model* (مثلاً `llama3.1`) و در صورت نیاز کلید را بدهید. مدل باید از tool calling پشتیبانی کند.
 - کلید در فایل `settings.xml` در پوشه‌ی داده‌ی برنامه‌ی کاربر ذخیره می‌شود (نه داخل پروژه‌های DAW). پرامپت و تنظیمات فعلی به سرویسی که انتخاب کرده‌اید ارسال می‌شود.
 
+### هوش مصنوعی پلاگین را می‌شناسد و راهنمایی می‌کند
+هوش مصنوعی ابتدا ابزار `style_guide` را صدا می‌زند. این ابزار ۱۲ دستور سبک (ترپ تاریک/مرموز/ملودیک، ترپ سول، R&B نرم، نئوسول، R&B شبانه، بوم‌بپ، لوفای، وست‌کوست، سینمایی، R&B شاد)، حال‌وهوای هر گام و کار هر نوب را به فارسی و انگلیسی دارد. پاسخ به شما می‌گوید کدام تونالیته، گام، BPM و تنظیمات انتخاب شد، **چرا**، و چطور بیشتر تنظیمش کنید.
+
+**فاین‌تیون:** اسکریپت `tools/finetune/make_dataset.py` دانش خود موتور را به یک دیتاست دوزبانه‌ی آموزشی تبدیل می‌کند (پرامپت ← آرگومان‌های `generate_midi` + توضیح) در قالب Gemini یا OpenAI: `python3 tools/finetune/make_dataset.py --cli build/hhmg-cli --format gemini --out hhmg_tuning.jsonl`. خود Job تیونینگ را باید در حساب Google Cloud یا ارائه‌دهنده‌ی خودتان اجرا کنید. بدون تیونینگ هم پرامپت سیستمی + `style_guide` همین دانش را به مدل می‌دهند.
+
 ## ۵. سرور MCP (استفاده از موتور در Claude، Gemini CLI، Cursor و ...)
 
 برنامه‌ی `hhmg-cli` (در پوشه‌ی `dist/`) پروتکل MCP را روی stdio پشتیبانی می‌کند.
 
-ابزارها: `list_scales`، `scale_notes`، `snap_to_scale`، `check_in_scale`، `list_patterns`، `list_progressions`، `generate_midi`
+ابزارها: `style_guide`، `list_scales`، `scale_notes`، `snap_to_scale`، `check_in_scale`، `list_patterns`، `list_progressions`، `generate_midi`
 (ابزار `generate_midi` پارامتر `output_path` را برای نوشتن فایل `.mid` می‌پذیرد).
 
 ```json
@@ -92,7 +97,7 @@ export TG_API_ID=... TG_API_HASH=...
 python3 tools/dataset/telegram_fetch.py --channel pulseestore --message 2019 --album --out data/telegram
 python3 tools/dataset/ingest.py data/telegram --out patterns.json
 ```
-فایل `patterns.json` را در `~/Documents/HipHopMidiGenerator/patterns.json` بگذارید (هنگام اجرا بارگذاری می‌شود) یا از دکمه‌ی **Load dataset…** استفاده کنید. پروگرِشن‌ها، ریتم‌ها و موتیف‌های یادگرفته‌شده به مجموعه‌ی داخلی *اضافه* می‌شوند و بر اساس نوب‌های Style به کار می‌روند.
+پروفایل **POP909** (مجوز MIT، فایل `data/patterns.pop909.json`) از قبل داخل پلاگین است. فایل `patterns.json` خودتان را در `~/Documents/HipHopMidiGenerator/patterns.json` بگذارید (هنگام اجرا بارگذاری می‌شود) یا از دکمه‌ی **Load dataset…** استفاده کنید. پروگرِشن‌ها، ریتم‌ها و موتیف‌های یادگرفته‌شده به مجموعه‌ی داخلی *اضافه* می‌شوند و بر اساس نوب‌های Style به کار می‌روند.
 آنچه استخراج می‌شود: تونالیته (پروفایل‌های کرومهانسل)، درجه‌ی آکورد دیاتونیک برای هر میزان، الگوی شروع نت‌های ملودی در یک میزان، و کانتورهای کوتاه درجه‌ی گام. نت‌های اصلی ذخیره نمی‌شوند. فقط از موادی استفاده کنید که مجوزش را دارید؛ جزئیات در `docs/ARCHITECTURE.md`.
 
 ## ۷. عیب‌یابی

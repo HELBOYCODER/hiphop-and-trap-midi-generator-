@@ -72,7 +72,7 @@ class IngestTests(unittest.TestCase):
         chord, melody = ingest.split_roles(m["tracks"], m["ppq"])
         degs = ingest.chord_degrees(chord, m["ppq"], root, mode)
         self.assertEqual(degs[:4], [1, 6, 3, 7])
-        rhythms = list(ingest.rhythm_bars(melody, m["ppq"]))
+        rhythms = list(ingest.rhythm_bars(melody[0], m["ppq"]))
         self.assertTrue(rhythms and [r[0] for r in rhythms[0]] == [0, 4, 8, 12])
 
     def test_cli_writes_library(self):

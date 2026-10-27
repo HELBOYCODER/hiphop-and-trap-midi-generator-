@@ -1,4 +1,5 @@
 #include "hhmg/Tools.h"
+#include "hhmg/Guide.h"
 #include <algorithm>
 #include <cmath>
 
@@ -131,6 +132,13 @@ Json toolSchemas() {
                    snapProps, {"root", "scale", "notes"}));
     list.push(tool("check_in_scale", "Report which MIDI notes are outside the scale.", snapProps, {"root", "scale", "notes"}));
 
+    Json gp = Json::object();
+    gp.set("query", prop("string", "Free text: genre, mood, reference, in any language (e.g. 'dark trap', 'ترپ تاریک', 'late night rnb')"));
+    gp.set("style", enumProp({"rnb", "trap", "hiphop"}, "Optional style"));
+    gp.set("mood", prop("string", "Optional mood words"));
+    gp.set("all", prop("boolean", "Return every recipe instead of the best 3"));
+    list.push(tool("style_guide", "Domain knowledge: best-matching style recipes (scale, BPM, complexity, swing, progression and WHY), what each scale feels like, and what each setting does. Call this first when the request is vague, and use it to explain your choices to the user.", gp, {}));
+
     Json lp = Json::object();
     lp.set("style", enumProp({"rnb", "trap", "hiphop"}, "Optional style filter"));
     list.push(tool("list_patterns", "Summarise the rhythm / motif / progression library (built-in + learned dataset).", lp, {}));
@@ -193,6 +201,9 @@ Json callTool(const std::string& name, const Json& a, const PatternLibrary& lib)
             }
             if (name == "snap_to_scale") out.set("notes", snapped);
             else { out.set("all_in_scale", bad.size() == 0); out.set("out_of_scale", bad); }
+        } else if (name == "style_guide") {
+            Json g = styleGuide(a);
+            for (size_t i = 0; i < g.keys().size(); ++i) out.set(g.keys()[i], g.valueAt(i));
         } else if (name == "list_patterns") {
             std::string st = a["style"].str("");
             int r = 0, m = 0, p = 0;

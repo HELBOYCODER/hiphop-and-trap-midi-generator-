@@ -85,7 +85,7 @@ def bar_ticks(ppq):
 
 
 def split_roles(tracks, ppq):
-    """Return (chord_notes, melody_notes) lists. Drum channel 10 is ignored.
+    """Return (chord_notes, [melody_track_notes, ...]). Drum channel 10 is ignored.
 
     Onsets within a 32nd note count as simultaneous, so strummed / humanized chords still read as chords.
     """
@@ -102,8 +102,7 @@ def split_roles(tracks, ppq):
             chord.append(notes)
         elif mean_pitch >= 52 and avg_poly < 1.4:
             melody.append(notes)
-    flat = lambda groups: sorted(n for g in groups for n in g)
-    return flat(chord), flat(melody)
+    return sorted(n for g in chord for n in g), melody  # melody stays a list of tracks
 
 
 def chord_degrees(chord_notes, ppq, root, mode):
@@ -155,8 +154,12 @@ def contours(melody_notes, root, mode, size=7):
     steps = [max(-4, min(4, b - a)) for a, b in zip(degs, degs[1:])]
     for i in range(0, max(0, len(steps) - size), 3):
         win = steps[i:i + size]
-        if any(win):
-            yield [0] + win[:size - 1]
+        win = win[:size - 1]
+        flips = sum(1 for a, b in zip(win, win[1:]) if a * b < 0)
+        if (any(win) and sum(1 for w in win if abs(w) >= 4) <= 1  # singable leaps only
+                and flips <= 2                                     # no trills
+                and len(set(win)) >= 3):                           # no scale runs / repeated-note filler
+            yield [0] + win
 
 
 def main():
@@ -197,10 +200,11 @@ def main():
                 win = tuple(seq[i:i + n])
                 if len(win) == n and len(set(win)) > 1:
                     prog_counts[(style, mode, win)] += 1
-        for r in rhythm_bars(melody, midi["ppq"]):
-            rhythm_counts[(style, tuple(tuple(x) for x in sorted(r)))] += 1
-        for m in contours(melody, root, mode):
-            motif_counts[(style, tuple(m))] += 1
+        for track in melody:  # never merge voices: interleaving MELODY + BRIDGE fakes huge leaps
+            for r in rhythm_bars(track, midi["ppq"]):
+                rhythm_counts[(style, tuple(tuple(x) for x in sorted(r)))] += 1
+            for m in contours(track, root, mode):
+                motif_counts[(style, tuple(m))] += 1
 
     out = {"rhythms": [], "motifs": [], "progressions": [],
            "meta": {"files_used": files, "files_skipped": skipped}}
@@ -212,9 +216,16 @@ def main():
         for style, items in per.items():
             yield from items[:args.max_per_kind]
 
-    for (style, mode, win), c in top(prog_counts, lambda k: k[0]):
-        if c >= args.min_count:
-            out["progressions"].append({"style": style, "mode": mode, "degrees": list(win), "count": c})
+    long_loops = collections.Counter({k: c for k, c in prog_counts.items() if len(k[2]) >= 4})
+    short_loops = collections.Counter({k: c for k, c in prog_counts.items() if len(k[2]) < 4})
+    for counter, cap in ((long_loops, args.max_per_kind), (short_loops, max(4, args.max_per_kind // 6))):
+        per = collections.defaultdict(list)
+        for key, c in counter.most_common():
+            if c >= args.min_count:
+                per[(key[0], key[1])].append((key, c))
+        for items in per.values():
+            for (style, mode, win), c in items[:cap]:
+                out["progressions"].append({"style": style, "mode": mode, "degrees": list(win), "count": c})
     for i, ((style, notes), c) in enumerate(top(rhythm_counts, lambda k: k[0])):
         out["rhythms"].append({"name": f"learned_{style}_{i}", "style": style, "bars": 1,
                                "notes": [list(n) for n in notes], "count": c})
