@@ -128,6 +128,8 @@ HipHopMidiEditor::HipHopMidiEditor (HipHopMidiProcessor& p)
             String extra;
             if (proc.presets.loadUser (presetBox.getText(), &extra) && extra.isNotEmpty()) prompt.setText (extra, dontSendNotification);
         }
+        proc.refProgression.clear();
+        proc.refHookRhythm.clear();
         proc.generate (false);
     };
     addAndMakeVisible (presetBox);
@@ -170,6 +172,10 @@ HipHopMidiEditor::HipHopMidiEditor (HipHopMidiProcessor& p)
         });
     };
     addAndMakeVisible (loadDataset);
+    matchButton.setEnabled (proc.hasImportAnalysis());
+    matchButton.setTooltip ("Apply the key, tempo, style mix, swing, chord progression and rhythm detected in the MIDI you dropped, then generate in that style");
+    matchButton.onClick = [this] { proc.matchImportedStyle(); setStatus ("Generating in the detected style (progression + rhythm taken from your file).", false); };
+    addAndMakeVisible (matchButton);
     addAndMakeVisible (roll); addAndMakeVisible (drag);
 
     // AI panel
@@ -289,8 +295,11 @@ void HipHopMidiEditor::filesDropped (const StringArray& files, int, int)
     for (auto& f : files)
         if (f.endsWithIgnoreCase (".mid") || f.endsWithIgnoreCase (".midi"))
         {
-            setStatus (proc.importMidiFile (File (f)) ? "Imported " + File (f).getFileName() + (proc.apvts.getRawParameterValue ("scaleLock")->load() > 0.5f ? " (snapped to scale)" : "")
-                                                      : "Could not read " + File (f).getFileName(), false);
+            const bool ok = proc.importMidiFile (File (f));
+            matchButton.setEnabled (proc.hasImportAnalysis());
+            if (! ok) { setStatus ("Could not read " + File (f).getFileName(), true); return; }
+            setStatus ("Imported " + File (f).getFileName() + (proc.apvts.getRawParameterValue ("scaleLock")->load() > 0.5f ? " (snapped to scale)" : "")
+                       + "\n" + proc.importAnalysisSummary() + "\nPress \"Match dropped style\" to generate in this style, or ask the AI to combine it.");
             return;
         }
 }
@@ -347,7 +356,9 @@ void HipHopMidiEditor::resized()
     actions.removeFromLeft (10);
     drag.setBounds (actions.removeFromLeft (200));
     actions.removeFromLeft (10);
-    loadDataset.setBounds (actions.removeFromLeft (140));
+    loadDataset.setBounds (actions.removeFromLeft (130));
+    actions.removeFromLeft (8);
+    matchButton.setBounds (actions.removeFromLeft (150));
     infoLabel.setBounds (actions.reduced (8, 0));
 
     area.removeFromTop (6);

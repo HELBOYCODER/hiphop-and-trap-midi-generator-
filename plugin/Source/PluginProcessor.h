@@ -1,6 +1,7 @@
 #pragma once
 #include "AiBridge.h"
 #include "PresetManager.h"
+#include <hhmg/Analyze.h>
 #include <hhmg/Tools.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <atomic>
@@ -49,6 +50,11 @@ public:
     void setResult (const hhmg::Result& r);
     void applyRequestToParameters (const hhmg::Request& r);
     bool importMidiFile (const juce::File& file);
+    // style recognition
+    hhmg::Json analyzeClipJson() const;                   // thread-safe; analyses the loaded clip
+    bool hasImportAnalysis() const { return importAnalysis.has_value(); }
+    juce::String importAnalysisSummary() const;           // one human-readable line (key, BPM, style, reasons)
+    void matchImportedStyle();                            // apply detected settings + its progression / rhythm
     juce::File exportTempMidi() const; // empty File if there is no clip
     std::shared_ptr<const Clip> getClip() const { return std::atomic_load (&clip); }
 
@@ -67,6 +73,8 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     PresetManager presets;
     juce::String lastPrompt, lastAiMessage;
+    std::vector<int> refProgression;                      // set by matchImportedStyle(); cleared on preset load
+    std::vector<hhmg::RhythmNote> refHookRhythm;
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
@@ -76,6 +84,7 @@ private:
 
     std::shared_ptr<const hhmg::PatternLibrary> library;
     std::shared_ptr<const Clip> clip;
+    std::optional<hhmg::Analysis> importAnalysis;
 
     std::atomic<double> hostBpm { 120.0 };
     double sampleRate = 44100.0;

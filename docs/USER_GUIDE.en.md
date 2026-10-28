@@ -54,6 +54,12 @@ The model picks settings by calling the plugin's tools; the engine writes the no
 - **OpenAI-compatible**: choose it, set *Endpoint* (e.g. Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`), *Model* (e.g. `llama3.1`) and, if needed, a key. The model must support tool calling.
 - The key is saved in `settings.xml` in your user application-data folder (not in DAW projects). Your prompt and the current settings are sent to the provider you choose.
 
+### The AI recognises styles from MIDI files and combines real examples
+- **Drop a .mid file** on the plugin: it detects key/mode, BPM, chord degrees per bar, harmonic richness, swing, looseness and scores **R&B / Trap / Hip-Hop** (with reasons). Press **Match dropped style** to generate with the same key, tempo, style mix, swing, progression and melody rhythm.
+- The AI has the tools `analyze_current_clip` / `analyze_midi` (what is this MIDI?), `find_references` (real loops from the learned library: key, BPM, chord degrees, rhythm, style) and `generate_midi` with `reference_progression` / `reference_rhythm` (take the chords from one reference and the rhythm from another). Example prompt: *"take the vibe of the clip I dropped but darker, F# minor, chords like a Cymatics Essential loop"*.
+- Heuristic, not magic: on 360 generated test clips the pitch set was right 93% of the time (trap tonic 100%; ii-V-I style R&B can read as a relative mode), and 11 of 12 canonical styles were recognised. Loops without a tempo event are judged without tempo.
+- The reference library stores per-file profiles (name, key, chord degrees, one rhythm bar), **never the notes**.
+
 ### The AI knows the plugin (and explains itself)
 The AI calls the `style_guide` tool first. It holds 12 style recipes (dark/eerie/melodic trap, trap soul, smooth R&B, neo soul, late-night R&B, boom bap, lo-fi, west coast, cinematic, bright R&B), the character of each scale and what every knob does, in English and Persian. The answer tells you which key/scale/BPM/settings were chosen, **why**, and how to tune it further.
 
@@ -63,7 +69,7 @@ The AI calls the `style_guide` tool first. It holds 12 style recipes (dark/eerie
 
 `hhmg-cli` (built with the project; in `dist/`) speaks the Model Context Protocol over stdio.
 
-Tools: `style_guide`, `list_scales`, `scale_notes`, `snap_to_scale`, `check_in_scale`, `list_patterns`, `list_progressions`, `generate_midi`
+Tools: `analyze_midi`, `find_references`, `style_guide`, `list_scales`, `scale_notes`, `snap_to_scale`, `check_in_scale`, `list_patterns`, `list_progressions`, `generate_midi`
 (`generate_midi` accepts `output_path` to write a `.mid`).
 
 ```jsonc

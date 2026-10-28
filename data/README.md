@@ -20,3 +20,5 @@ project owner (who states they hold the licence): *Essential MIDI Collection Bun
 `hiphop` (an assumption: the packs carry no style label). The MIDI files themselves are **not** in this repository.
 Not used: *Vibrance* (San Holo / future bass, off-genre), *Zodiac Platinum* (WAV only), *Hyperion* (MIDI inside the
 archive is password-protected - not opened), and the large paid-looking packs. Both JSON files are compiled into the plugin.
+
+`patterns.cymatics.json` also holds `references`: one abstract profile per file (id, pack, name, key taken from the file name, chord degrees per bar, one rhythm bar; no notes) so the AI can look up and combine real examples.

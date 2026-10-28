@@ -95,6 +95,16 @@ void PatternLibrary::mergeJson(const Json& j) {
         for (int d : x.degrees) ok = ok && d >= 1 && d <= 7;
         if (ok) progressions.push_back(std::move(x));
     }
+    for (const auto& r : j["references"].items()) {
+        Reference x;
+        x.id = r["id"].str(""); x.pack = r["pack"].str(""); x.name = r["name"].str(""); x.style = r["style"].str("hiphop");
+        x.mode = r["mode"].str("minor"); x.root = ((r["root"].integer() % 12) + 12) % 12; x.bars = r["bars"].integer();
+        x.bpm = r["bpm"].num(); x.density = r["density"].num(); x.swing = r["swing"].num();
+        for (const auto& d : r["degrees"].items()) if (d.integer() >= 1 && d.integer() <= 7) x.degrees.push_back(d.integer());
+        for (const auto& n : r["rhythm"].items())
+            if (n.size() >= 2) x.rhythm.push_back({n.at(0).num(), n.at(1).num(), n.size() > 2 ? n.at(2).integer() : 90});
+        if (!x.id.empty() && !x.degrees.empty()) references.push_back(std::move(x));
+    }
 }
 
 Json PatternLibrary::toJson() const {

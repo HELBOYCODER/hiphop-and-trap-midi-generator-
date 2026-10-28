@@ -1,3 +1,4 @@
+#include "hhmg/Analyze.h"
 #include "hhmg/Guide.h"
 #include "hhmg/Tools.h"
 #include <cstdio>
@@ -88,6 +89,51 @@ int main() {
       CHECK(fa["matches"].at(0)["id"].str() == "dark_trap", "persian query");
       Json n = callTool("style_guide", Json::parse("{\"query\":\"smooth romantic r&b\"}"), lib);
       CHECK(n["matches"].at(0)["id"].str() == "rnb_smooth", "smooth rnb"); }
+
+    // Style recognition: generate -> write SMF -> read back -> analyse
+    { auto sameSet = [](int r1, int s1, int r2, int s2) { Scale A{r1, s1}, B{r2, s2}; for (int p = 0; p < 12; ++p) if (A.contains(p) != B.contains(p)) return false; return true; };
+      int setOk = 0, trapTonic = 0, n = 0, trapN = 0;
+      for (int root = 0; root < 12; ++root)
+          for (const char* sc : {"minor", "major", "dorian", "phrygian", "harmonic_minor"})
+              for (uint32_t seed = 1; seed <= 3; ++seed)
+                  for (int trap = 0; trap < 2; ++trap) {
+                      Request rq; rq.root = root; rq.scale = findScale(sc); rq.seed = seed; rq.bars = 4; rq.bass = false;
+                      if (trap) rq.mix = {0, 1, 0};
+                      MidiData md; std::string e;
+                      CHECK(readMidi(writeMidi(generate(rq, lib)), md, e), "readMidi %s", e.c_str());
+                      Analysis a = analyzeMidi(md, lib);
+                      ++n; if (sameSet(a.root, a.scale, root, rq.scale)) ++setOk;
+                      if (trap) { ++trapN; if (a.root == root) ++trapTonic; }
+                  }
+      std::printf("analysis: pitch set %d/%d, trap tonic %d/%d\n", setOk, n, trapTonic, trapN);
+      CHECK(setOk >= n * 85 / 100, "pitch-set detection %d/%d", setOk, n);
+      CHECK(trapTonic >= trapN * 95 / 100, "trap tonic detection %d/%d", trapTonic, trapN);
+      int styleOk = 0;
+      for (const auto& rc : recipes()) {
+          Request rq; rq.root = 6; rq.scale = findScale(rc.scale); rq.mix = {rc.rnb, rc.trap, rc.hiphop}; rq.complexity = rc.complexity;
+          rq.humanize = rc.humanize; rq.swing = rc.swing; rq.bars = rc.bars; rq.progression = rc.progression; rq.bpm = (rc.bpmMin + rc.bpmMax) / 2; rq.seed = 5; rq.bass = false;
+          MidiData md; std::string e; readMidi(writeMidi(generate(rq, lib)), md, e);
+          Analysis a = analyzeMidi(md, lib);
+          std::string want = rc.rnb >= rc.trap && rc.rnb >= rc.hiphop ? "rnb" : rc.trap >= rc.hiphop ? "trap" : "hiphop";
+          if (a.topStyle == want) ++styleOk;
+      }
+      std::printf("style recognised for %d/%d recipes\n", styleOk, (int) recipes().size());
+      CHECK(styleOk >= 10, "style recognition %d/12", styleOk);
+
+      // tools: analyze_midi + references
+      Request rq; rq.seed = 9; Result res = generate(rq, lib);
+      writeMidiFile(res, "/tmp/hhmg_an.mid");
+      Json an = callTool("analyze_midi", Json::parse("{\"path\":\"/tmp/hhmg_an.mid\"}"), lib);
+      CHECK(an["ok"].boolean() && an["suggested_generate_midi_settings"]["scale"].isString(), "analyze_midi %s", an.dump().c_str());
+      CHECK(!callTool("analyze_midi", Json::parse("{\"path\":\"/etc/passwd\"}"), lib)["ok"].boolean(true), "analyze_midi refuses non-midi");
+      PatternLibrary lib2 = lib;
+      lib2.mergeJson(Json::parse("{\"references\":[{\"id\":\"a-1\",\"pack\":\"P\",\"name\":\"Dark one\",\"style\":\"trap\",\"mode\":\"minor\",\"root\":6,\"bpm\":140,\"bars\":8,\"degrees\":[1,6,3,7,1,6,3,7],\"rhythm\":[[0,2,90],[3,1,80],[6,2,90],[10,2,90]]}]}"));
+      Json fr = callTool("find_references", Json::parse("{\"style\":\"trap\",\"mode\":\"minor\",\"bpm\":142}"), lib2);
+      CHECK(fr["references"].size() == 1 && fr["references"].at(0)["id"].str() == "a-1", "find_references");
+      Json gen = callTool("generate_midi", Json::parse("{\"root\":\"F#\",\"scale\":\"minor\",\"style\":\"trap\",\"reference_progression\":\"a-1\",\"reference_rhythm\":\"a-1\"}"), lib2);
+      CHECK(gen["ok"].boolean() && gen["degrees"].size() >= 4 && gen["degrees"].at(0).integer() == 1 && gen["degrees"].at(1).integer() == 6, "reference progression used: %s", gen.dump().c_str());
+      CHECK(gen["out_of_scale_notes"].integer() == 0, "reference generate in scale");
+      CHECK(!callTool("generate_midi", Json::parse("{\"reference_progression\":\"nope\"}"), lib2)["ok"].boolean(true), "unknown reference rejected"); }
 
     // MIDI file header
     { Request rq; Result r = generate(rq, lib); auto b = writeMidi(r);

@@ -1,4 +1,5 @@
 #include "hhmg/Tools.h"
+#include "hhmg/Analyze.h"
 #include "hhmg/Guide.h"
 #include <algorithm>
 #include <cmath>
@@ -118,6 +119,34 @@ Json resultToJson(const Result& r, bool includeNotes) {
     return o;
 }
 
+std::string applyReferences(Request& req, const Json& a, const PatternLibrary& lib, std::string& error) {
+    std::string note;
+    auto find = [&](const std::string& id) -> const Reference* {
+        for (const auto& r : lib.references) if (r.id == id) return &r;
+        return nullptr;
+    };
+    std::string pid = a["reference_progression"].str(""), rid = a["reference_rhythm"].str("");
+    if (!pid.empty()) {
+        const Reference* r = find(pid);
+        if (!r) { error = "unknown reference id '" + pid + "' (use find_references)"; return note; }
+        std::vector<int> d = r->degrees;
+        for (size_t period : {1u, 2u, 4u, 8u}) {   // shortest repeating loop
+            if (d.size() < period * 2) break;
+            bool ok = true;
+            for (size_t i = period; i < d.size() && ok; ++i) ok = d[i] == d[i % period];
+            if (ok) { d.resize(period); break; }
+        }
+        if (d.size() > 8) d.resize(8);
+        if (d.size() >= 2) { req.progression = d; note += "progression from '" + r->name + "'"; }
+    }
+    if (!rid.empty()) {
+        const Reference* r = find(rid);
+        if (!r) { error = "unknown reference id '" + rid + "' (use find_references)"; return note; }
+        if (!r->rhythm.empty()) { req.hookRhythm = r->rhythm; note += std::string(note.empty() ? "" : ", ") + "rhythm from '" + r->name + "'"; }
+    }
+    return note;
+}
+
 Json toolSchemas() {
     Json list = Json::array();
 
@@ -138,6 +167,20 @@ Json toolSchemas() {
     gp.set("mood", prop("string", "Optional mood words"));
     gp.set("all", prop("boolean", "Return every recipe instead of the best 3"));
     list.push(tool("style_guide", "Domain knowledge: best-matching style recipes (scale, BPM, complexity, swing, progression and WHY), what each scale feels like, and what each setting does. Call this first when the request is vague, and use it to explain your choices to the user.", gp, {}));
+
+    Json fr = Json::object();
+    fr.set("style", enumProp({"rnb", "trap", "hiphop"}, "Preferred style"));
+    fr.set("mode", enumProp({"minor", "major"}, "Harmonic mode of the reference"));
+    fr.set("root", prop("string", "Preferred key, e.g. F#"));
+    fr.set("bpm", prop("number", "Preferred tempo; closer is ranked higher"));
+    fr.set("query", prop("string", "Words matched against pack / file names"));
+    fr.set("limit", prop("integer", "Max results (default 8)"));
+    list.push(tool("find_references", "Search the learned reference MIDI profiles (real producer loops: key, BPM, chord degrees per bar, melody rhythm, style). Use the returned ids as reference_progression / reference_rhythm in generate_midi to combine real examples.", fr, {}));
+
+    Json am = Json::object();
+    am.set("path", prop("string", "Path to a .mid file on this computer"));
+    list.push(tool("analyze_midi", "Analyze a MIDI file: key/mode, BPM, chord degrees per bar, harmonic richness, swing, looseness, melodic repetition/space, R&B/Trap/Hip-Hop style scores with reasons, and the generate_midi settings that reproduce its feel.", am, {"path"}));
+    list.push(tool("analyze_current_clip", "Analyze the clip currently loaded in the plugin (generated or imported MIDI) and return the same report as analyze_midi. Only available inside the plugin.", Json::object(), {}));
 
     Json lp = Json::object();
     lp.set("style", enumProp({"rnb", "trap", "hiphop"}, "Optional style filter"));
@@ -167,6 +210,8 @@ Json toolSchemas() {
     Json pi = Json::object(); pi.set("type", "integer"); prog.set("items", pi);
     g.set("progression", prog);
     g.set("seed", prop("integer", "Same seed + settings = same result"));
+    g.set("reference_progression", prop("string", "Reference id from find_references: use its chord progression"));
+    g.set("reference_rhythm", prop("string", "Reference id from find_references: use its melody rhythm for the hook"));
     g.set("output_path", prop("string", "If set, write a .mid file here"));
     g.set("include_notes", prop("boolean", "Return every note in the response"));
     list.push(tool("generate_midi", "Generate chords/melody/808 that are guaranteed in-scale and optionally write a .mid file.", g, {"root", "scale"}));
@@ -204,6 +249,46 @@ Json callTool(const std::string& name, const Json& a, const PatternLibrary& lib)
         } else if (name == "style_guide") {
             Json g = styleGuide(a);
             for (size_t i = 0; i < g.keys().size(); ++i) out.set(g.keys()[i], g.valueAt(i));
+        } else if (name == "find_references") {
+            std::string st = a["style"].str(""), mode = a["mode"].str(""), q = a["query"].str("");
+            for (auto& c : q) c = (char) std::tolower((unsigned char) c);
+            int root = a["root"].isString() ? parseRoot(a["root"].str()) : (a["root"].isNumber() ? ((a["root"].integer() % 12) + 12) % 12 : -1);
+            double bpm = a["bpm"].num(0);
+            int limit = a.has("limit") ? std::max(1, std::min(25, a["limit"].integer())) : 8;
+            std::vector<std::pair<double, const Reference*>> ranked;
+            for (const auto& r : lib.references) {
+                double sc = 0;
+                if (!st.empty() && r.style == st) sc += 2;
+                if (!mode.empty() && r.mode == mode) sc += 2;
+                if (root >= 0 && r.root == root) sc += 1.5;
+                if (bpm > 0 && r.bpm > 0) sc += std::max(0.0, 2.0 - std::fabs(r.bpm - bpm) / 15.0);
+                if (!q.empty()) { std::string hay = r.name + " " + r.pack; for (auto& c : hay) c = (char) std::tolower((unsigned char) c); if (hay.find(q) != std::string::npos) sc += 2; }
+                ranked.push_back({sc, &r});
+            }
+            std::stable_sort(ranked.begin(), ranked.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+            Json arr = Json::array();
+            for (size_t i = 0; i < ranked.size() && (int) i < limit; ++i) {
+                const Reference& r = *ranked[i].second;
+                Json x = Json::object();
+                x.set("id", r.id); x.set("name", r.name); x.set("pack", r.pack); x.set("style", r.style);
+                x.set("key", std::string(noteName(r.root)) + " " + r.mode); x.set("bpm", r.bpm); x.set("bars", r.bars);
+                Json d = Json::array(); for (int v : r.degrees) d.push(v);
+                x.set("chord_degrees_per_bar", d); x.set("melody_notes_per_bar", std::round(r.density * 10) / 10); x.set("swing", std::round(r.swing * 100) / 100);
+                arr.push(x);
+            }
+            out.set("total_references", (int) lib.references.size());
+            out.set("references", arr);
+        } else if (name == "analyze_midi") {
+            std::string path = a["path"].str("");
+            std::string low = path; for (auto& c : low) c = (char) std::tolower((unsigned char) c);
+            if (low.size() < 4 || (low.substr(low.size() - 4) != ".mid" && (low.size() < 5 || low.substr(low.size() - 5) != ".midi")))
+                return err("only .mid / .midi files can be analyzed");
+            MidiData md; std::string e;
+            if (!readMidiFile(path, md, e)) return err(e);
+            Json rep = analysisToJson(analyzeMidi(md, lib));
+            for (size_t i = 0; i < rep.keys().size(); ++i) out.set(rep.keys()[i], rep.valueAt(i));
+        } else if (name == "analyze_current_clip") {
+            return err("analyze_current_clip only works inside the plugin; use analyze_midi with a file path");
         } else if (name == "list_patterns") {
             std::string st = a["style"].str("");
             int r = 0, m = 0, p = 0;
@@ -228,8 +313,11 @@ Json callTool(const std::string& name, const Json& a, const PatternLibrary& lib)
             out.set("mode", mode); out.set("progressions", arr);
         } else if (name == "generate_midi") {
             Request rq = requestFromJson(a);
+            std::string refErr, refNote = applyReferences(rq, a, lib, refErr);
+            if (!refErr.empty()) return err(refErr);
             Result r = generate(rq, lib);
             Json body = resultToJson(r, a["include_notes"].boolean(false));
+            if (!refNote.empty()) out.set("used_references", refNote);
             for (size_t i = 0; i < body.keys().size(); ++i) out.set(body.keys()[i], body.valueAt(i));
             std::string path = a["output_path"].str("");
             if (!path.empty()) {

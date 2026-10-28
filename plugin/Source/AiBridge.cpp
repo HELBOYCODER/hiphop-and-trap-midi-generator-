@@ -5,17 +5,19 @@ namespace AiBridge
 namespace
 {
 const char* kSystemPrompt =
-    "You are the composition guide inside a MIDI plugin for R&B, trap and hip-hop producers. "
+    "You are the composition guide inside a MIDI plugin for R&B, trap and hip-hop producers (trap and hip-hop first). "
     "You cannot write notes yourself: you MUST use the provided tools; the engine writes the notes and keeps every note in the scale. "
-    "Know the plugin's elements: 13 scales (major, minor, harmonic_minor, melodic_minor, dorian, phrygian, lydian, mixolydian, locrian, "
-    "phrygian_dominant, pentatonic_major, pentatonic_minor, blues), a style blend (rnb/trap/hiphop 0-1), complexity, humanize, swing, "
-    "velocity_variation, bars, bpm, chord/melody/808 parts and an optional chord progression of degrees 1-7. "
-    "Workflow: (1) Call style_guide with the user's words (any language) to get matching recipes - it tells you which scale, BPM, complexity, "
-    "swing and progression produce that sound and why. (2) Adjust the recipe to the user's explicit wishes (key, tempo, mood, which parts) and "
-    "call generate_midi once. Explicit user values always win over recipe values. (3) Reply in the user's language with 3-5 short lines: "
-    "what you made (key, scale, BPM, chords), WHY these choices give the sound they want, and 1-2 concrete tips for tuning it "
-    "(which knob to move for more/less of what, e.g. 'raise Swing for a looser boom-bap feel', 'press GENERATE for new ideas, keep the Seed to recall one'). "
-    "Mention suitable keys/scales for their goal. Never pass output_path. Do not invent tool names or settings.";
+    "You have access to the plugin's learned library of real producer MIDI loops and to MIDI analysis. Know the elements: 13 scales "
+    "(major, minor, harmonic_minor, melodic_minor, dorian, phrygian, lydian, mixolydian, locrian, phrygian_dominant, pentatonic_major, "
+    "pentatonic_minor, blues), a style blend (rnb/trap/hiphop 0-1), complexity, humanize, swing, velocity_variation, bars, bpm, "
+    "chord/melody/808 parts, an optional chord progression of degrees 1-7, and reference ids for progression and rhythm. "
+    "Workflow: (1) If the user mentions a MIDI file, a reference, 'this clip' or has imported/generated something, call analyze_current_clip "
+    "(or analyze_midi with a path) to recognise its style: key, mode, BPM, chord degrees, swing, looseness and R&B/Trap/Hip-Hop scores. "
+    "(2) Call style_guide with the user's words (any language) for matching recipes; call find_references to find real loops with a similar "
+    "key, tempo and style. (3) To combine things, call generate_midi once, taking the progression from one reference (reference_progression), "
+    "the melody rhythm from another (reference_rhythm), and the sound settings from the analysis or recipe. Explicit user values always win. "
+    "(4) Reply in the user's language in 3-6 short lines: the style you recognised and why, what you combined (name the references), key/scale/BPM/chords, "
+    "and 1-2 tips for tuning (which knob to move). Never pass output_path. Do not invent tool names, ids or settings; only use ids returned by find_references.";
 
 hhmg::Json toolsForGemini()
 {
@@ -64,17 +66,26 @@ hhmg::Json toolsForOpenAi()
 }
 
 // Runs one tool for the model. generate_midi is intercepted so nothing is written to disk.
-hhmg::Json execTool (const std::string& name, hhmg::Json args, const hhmg::PatternLibrary& lib, Outcome& out)
+hhmg::Json execTool (const std::string& name, hhmg::Json args, const hhmg::PatternLibrary& lib, Outcome& out,
+                     const std::function<hhmg::Json()>& analyzeClip)
 {
     if (name == "generate_midi")
     {
         hhmg::Request rq = hhmg::requestFromJson (args);
+        std::string refError, refNote = hhmg::applyReferences (rq, args, lib, refError);
+        if (! refError.empty())
+        {
+            hhmg::Json e = hhmg::Json::object(); e.set ("ok", false); e.set ("error", refError);
+            return e;
+        }
         hhmg::Result r = hhmg::generate (rq, lib);
         out.result = r;
         hhmg::Json j = hhmg::resultToJson (r, false);
         j.set ("ok", true);
+        if (! refNote.empty()) j.set ("used_references", refNote);
         return j;
     }
+    if (name == "analyze_current_clip" && analyzeClip) return analyzeClip();
     return hhmg::callTool (name, args, lib);
 }
 
@@ -112,7 +123,8 @@ juce::String errorText (const HttpReply& r)
 }
 
 Outcome runGemini (const Settings& s, const juce::String& prompt, const juce::String& ctx,
-                   const hhmg::PatternLibrary& lib, const std::function<bool()>& cancel)
+                   const hhmg::PatternLibrary& lib, const std::function<bool()>& cancel,
+                   const std::function<hhmg::Json()>& analyzeClip)
 {
     using hhmg::Json;
     Outcome out;
@@ -159,7 +171,7 @@ Outcome runGemini (const Settings& s, const juce::String& prompt, const juce::St
             if (part["functionCall"].isObject())
             {
                 const Json& fc = part["functionCall"];
-                Json result = execTool (fc["name"].str(), fc["args"].isObject() ? fc["args"] : Json::object(), lib, out);
+                Json result = execTool (fc["name"].str(), fc["args"].isObject() ? fc["args"] : Json::object(), lib, out, analyzeClip);
                 Json fr = Json::object(); fr.set ("name", fc["name"]); fr.set ("response", result);
                 Json rp = Json::object(); rp.set ("functionResponse", fr);
                 responses.push (rp);
@@ -182,7 +194,8 @@ Outcome runGemini (const Settings& s, const juce::String& prompt, const juce::St
 }
 
 Outcome runOpenAi (const Settings& s, const juce::String& prompt, const juce::String& ctx,
-                   const hhmg::PatternLibrary& lib, const std::function<bool()>& cancel)
+                   const hhmg::PatternLibrary& lib, const std::function<bool()>& cancel,
+                   const std::function<hhmg::Json()>& analyzeClip)
 {
     using hhmg::Json;
     Outcome out;
@@ -228,7 +241,7 @@ Outcome runOpenAi (const Settings& s, const juce::String& prompt, const juce::St
         {
             Json args = Json::object();
             try { args = Json::parse (call["function"]["arguments"].str ("{}")); } catch (...) {}
-            Json result = execTool (call["function"]["name"].str(), args, lib, out);
+            Json result = execTool (call["function"]["name"].str(), args, lib, out, analyzeClip);
             Json m = Json::object();
             m.set ("role", "tool"); m.set ("tool_call_id", call["id"]); m.set ("content", result.dump());
             messages.push (m);
@@ -241,15 +254,16 @@ Outcome runOpenAi (const Settings& s, const juce::String& prompt, const juce::St
 } // namespace
 
 Outcome run (const Settings& settings, const juce::String& prompt, const juce::String& ctx,
-             const hhmg::PatternLibrary& lib, const std::function<bool()>& cancel)
+             const hhmg::PatternLibrary& lib, const std::function<bool()>& cancel,
+             const std::function<hhmg::Json()>& analyzeClip)
 {
     if (prompt.trim().isEmpty()) return { false, "Type a prompt first.", std::nullopt };
     if (settings.provider == Provider::gemini && settings.apiKey.trim().isEmpty())
         return { false, "Enter your Gemini API key (or set the GEMINI_API_KEY environment variable).", std::nullopt };
     try
     {
-        return settings.provider == Provider::gemini ? runGemini (settings, prompt, ctx, lib, cancel)
-                                                     : runOpenAi (settings, prompt, ctx, lib, cancel);
+        return settings.provider == Provider::gemini ? runGemini (settings, prompt, ctx, lib, cancel, analyzeClip)
+                                                     : runOpenAi (settings, prompt, ctx, lib, cancel, analyzeClip);
     }
     catch (const std::exception& e)
     {

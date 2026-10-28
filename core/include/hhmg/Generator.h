@@ -39,6 +39,7 @@ struct Request {
     bool chords = true, melody = true, bass = false;
     int melodyOctave = 5;         // octave of the melody's centre (C5 = 72 with 5)
     std::vector<int> progression; // optional explicit 1-based degrees; empty = pick from library
+    std::vector<RhythmNote> hookRhythm; // optional one-bar rhythm (16th steps) for hook melodies, e.g. from a reference
     uint32_t seed = 1;
 };
 

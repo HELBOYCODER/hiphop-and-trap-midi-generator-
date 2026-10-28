@@ -287,6 +287,8 @@ Result generate(const Request& in, const PatternLibrary& lib) {
             }
             const Rhythm* rhA = pickRhythm(1, 3.0 + 2.0 * cx);
             const Rhythm* rhB = pickRhythm(1, 2.5 + 2.0 * cx);
+            Rhythm guide;
+            if (!rq.hookRhythm.empty()) { guide.name = "reference"; guide.bars = 1; guide.notes = rq.hookRhythm; rhA = &guide; }
             if (!rhA) rhA = rhB;
             if (!rhA) rhA = &lib.rhythms.front();
             if (!rhB) rhB = rhA;

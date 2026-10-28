@@ -63,7 +63,7 @@ private:
 
     juce::ComboBox presetBox, rootBox, scaleBox, providerBox;
     juce::TextButton savePreset { "Save" }, deletePreset { "Delete" }, generateButton { "GENERATE" }, dice { "New seed" },
-        loadDataset { "Load dataset..." }, askButton { "Ask AI" };
+        loadDataset { "Load dataset..." }, askButton { "Ask AI" }, matchButton { "Match dropped style" };
     juce::Slider bars { juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft },
                  bpm { juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft },
                  seed { juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft },

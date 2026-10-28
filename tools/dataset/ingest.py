@@ -13,8 +13,10 @@ import io
 import json
 import math
 import os
+import re
 import sys
 import zipfile
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from midi_parse import MidiError, parse_midi  # noqa: E402
@@ -49,6 +51,20 @@ def estimate_key(notes):
             if c > best[0]:
                 best = (c, root, mode)
     return best[1], best[2]
+
+
+KEY_RE = re.compile(r"[-_ ]([A-G])([#b]?)\s*(Maj(?:or)?|Min(?:or)?)\b", re.IGNORECASE)
+PC = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+
+
+def key_from_name(name):
+    """Many sample packs (Cymatics...) state the key in the file name, e.g. 'MIDI 34 - G Min'. That beats
+    estimating it: relative major/minor pairs are ambiguous to a histogram but not to the producer."""
+    m = KEY_RE.search(os.path.splitext(os.path.basename(name.split("!")[-1]))[0])
+    if not m:
+        return None
+    pc = (PC[m.group(1).upper()] + (1 if m.group(2) == "#" else -1 if m.group(2) == "b" else 0)) % 12
+    return pc, "minor" if m.group(3).lower().startswith("min") else "major"
 
 
 def infer_style(path, default):
@@ -162,6 +178,49 @@ def contours(melody_notes, root, mode, size=7):
             yield [0] + win
 
 
+def pack_of(name, inputs):
+    """Top-level folder / archive the file came from (for provenance in reference profiles)."""
+    for root in inputs:
+        base = root.rstrip("/")
+        if name.startswith(base):
+            rel = name[len(base):].lstrip("/!")
+            parts = rel.split("/")
+            return (parts[0] if len(parts) > 1 else os.path.basename(base)) or os.path.basename(base)
+    return "unknown"
+
+
+def make_reference(name, pack, style, root, mode, bpm, degs, melody_tracks, ppq, has_tempo, chord_notes=()):
+    """One abstract per-file profile: no notes, only what the AI needs to find and combine real examples."""
+    lead = max(melody_tracks, key=len) if melody_tracks else []
+    if not lead and chord_notes:  # chord-only loop: its hit pattern is the rhythm (one entry per chord onset)
+        tol, seen, lead = max(1, ppq // 8), set(), []
+        for n in sorted(chord_notes):
+            if n[0] // tol not in seen:
+                seen.add(n[0] // tol)
+                lead.append(n)
+    bt, st = ppq * 4, ppq / 4
+    nbars = max(1, max((n[1] for n in lead), default=0) // bt + 1) if lead else max(1, len(degs))
+    swing_offsets = []
+    for s0, e0, p0, v0, c0 in lead:
+        step = s0 / st
+        nearest = round(step)
+        if nearest % 2 and abs(step - nearest) < 0.45:
+            swing_offsets.append(max(0.0, step - nearest))
+    swing = min(1.0, (sum(swing_offsets) / len(swing_offsets)) / 0.55) if swing_offsets else 0.0
+    rhythm = max(rhythm_bars(lead, ppq), key=len, default=[]) if lead else []
+    seq = [d for d in degs if d][:16]
+    stem = os.path.splitext(os.path.basename(name.split("!")[-1]))[0]
+    slug = re.sub(r"[^a-z0-9]+", "", pack.lower().replace("cymatics", ""))[:10] or "ref"
+    rid = slug + "-" + format(zlib.crc32(name.encode()) & 0xFFFFFF, "06x")
+    bpm_val = round(60000000 / bpm, 1) if has_tempo and bpm else 0
+    if bpm_val:  # tempo heuristic overrides the folder-level assumption (stored as measured, not labelled by the pack)
+        style = "trap" if bpm_val >= 128 else "hiphop" if 82 <= bpm_val < 128 else ("rnb" if mode == "major" else "trap")
+    return {"id": rid, "pack": pack, "name": stem, "style": style, "root": root, "mode": mode,
+            "bpm": bpm_val, "bars": nbars, "degrees": seq,
+            "density": round(len(lead) / nbars, 2), "swing": round(swing, 2),
+            "rhythm": [list(n) for n in rhythm]}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="+", help="folders, .zip packs or .mid files")
@@ -171,12 +230,15 @@ def main():
                     help="style when it cannot be inferred from the path (default hiphop)")
     ap.add_argument("--max-per-kind", type=int, default=80, help="cap per (style, kind)")
     ap.add_argument("--min-count", type=int, default=1, help="drop progressions seen fewer times")
+    ap.add_argument("--references", action="store_true",
+                    help="also write per-file profiles (key, BPM, chord degrees, rhythm; no notes) for AI lookup")
     args = ap.parse_args()
 
     prog_counts = collections.Counter()
     rhythm_counts = collections.Counter()
     motif_counts = collections.Counter()
     files = skipped = 0
+    references = []
 
     for name, blob in iter_midi_blobs(args.inputs):
         try:
@@ -192,8 +254,11 @@ def main():
             skipped += 1
             continue
         files += 1
-        root, mode = estimate_key(all_notes)
+        root, mode = key_from_name(name) or estimate_key(all_notes)
         degs = chord_degrees(chord, midi["ppq"], root, mode)
+        if args.references and len([d for d in degs if d]) >= 2:
+            references.append(make_reference(name, pack_of(name, args.inputs), style, root, mode,
+                                             midi["tempos"][0][1], degs, melody, midi["ppq"], midi.get("has_tempo", False), chord))
         for n in (4, 2):
             seq = [d for d in degs if d]
             for i in range(0, max(0, len(seq) - n + 1), n):
@@ -232,6 +297,8 @@ def main():
     for (style, steps), c in top(motif_counts, lambda k: k[0]):
         out["motifs"].append({"style": style, "steps": list(steps), "count": c})
 
+    if args.references:
+        out["references"] = references
     with open(args.out, "w") as f:
         json.dump(out, f, indent=1)
     print(f"{files} files used, {skipped} skipped -> {args.out}: "

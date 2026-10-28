@@ -108,6 +108,17 @@ int main (int argc, char** argv)
     auto imp = other.getClip();
     check (imp != nullptr && hhmg::countOutOfScale (imp->result) == 0, "imported notes are in scale");
 
+    // --- style recognition on import + "match style"
+    check (other.hasImportAnalysis(), "import produced an analysis");
+    check (other.importAnalysisSummary().contains ("looks like"), "analysis summary: " + other.importAnalysisSummary());
+    {
+        auto j = other.analyzeClipJson();
+        check (j["ok"].boolean() && j["detected_style"].isString(), "analyze_current_clip json");
+        other.matchImportedStyle();
+        check (other.getClip() != nullptr && hhmg::countOutOfScale (other.getClip()->result) == 0, "match style generates in scale");
+        check (! other.refProgression.empty(), "match style carries the progression");
+    }
+
     // --- factory presets
     for (int i = 0; i < proc.presets.getFactoryNames().size(); ++i) { proc.presets.loadFactory (i); proc.generate (true); check (hhmg::countOutOfScale (proc.getClip()->result) == 0, "preset " + String (i)); }
 

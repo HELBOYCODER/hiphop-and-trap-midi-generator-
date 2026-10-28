@@ -69,6 +69,7 @@ def parse_midi(data):
                     notes.append((st, max(tick, st + 1), d1, vel, ch))
         notes.sort()
         tracks.append(notes)
+    has_tempo = bool(tempos)
     if not tempos:
         tempos = [(0, 500000)]
-    return {"ppq": division, "tempos": sorted(tempos), "tracks": tracks}
+    return {"ppq": division, "tempos": sorted(tempos), "has_tempo": has_tempo, "tracks": tracks}

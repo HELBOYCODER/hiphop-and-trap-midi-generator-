@@ -201,6 +201,8 @@ hhmg::Request HipHopMidiProcessor::buildRequest() const
     r.bass = f ("bass") > 0.5f;
     r.melodyOctave = (int) f ("octave");
     r.seed = (uint32_t) f ("seed");
+    r.progression = refProgression;
+    r.hookRhythm = refHookRhythm;
     return r;
 }
 
@@ -221,6 +223,8 @@ void HipHopMidiProcessor::setResult (const hhmg::Result& r)
 
 void HipHopMidiProcessor::applyRequestToParameters (const hhmg::Request& r)
 {
+    refProgression.clear();
+    refHookRhythm.clear();
     auto setReal = [this] (const char* id, float v)
     {
         if (auto* p = apvts.getParameter (id)) p->setValueNotifyingHost (p->convertTo0to1 (v));
@@ -292,8 +296,55 @@ bool HipHopMidiProcessor::importMidiFile (const File& file)
     r.request.bars = jlimit (1, 32, (int) std::ceil (maxEnd / hhmg::kTicksPerBar - 0.001));
     r.description = "Imported: " + file.getFileName().toStdString();
     if (auto* p = apvts.getParameter ("bars")) p->setValueNotifyingHost (p->convertTo0to1 ((float) r.request.bars));
+    {   // recognise the style of what was dropped (on the original notes, before any scale snapping changed them)
+        hhmg::MidiData md;
+        std::string err;
+        if (hhmg::readMidiFile (file.getFullPathName().toStdString(), md, err))
+            importAnalysis = hhmg::analyzeMidi (md, *std::atomic_load (&library));
+    }
     setResult (r);
     return true;
+}
+
+hhmg::Json HipHopMidiProcessor::analyzeClipJson() const
+{
+    auto c = getClip();
+    if (c == nullptr || c->result.notes.empty())
+    {
+        hhmg::Json e = hhmg::Json::object(); e.set ("ok", false); e.set ("error", "no clip loaded"); return e;
+    }
+    std::vector<hhmg::Note> chords, melody;
+    for (auto& n : c->result.notes)
+    {
+        if (n.channel == hhmg::kChords) chords.push_back (n);
+        else if (n.channel == hhmg::kMelody) melody.push_back (n);
+    }
+    auto lib = std::atomic_load (&library);
+    hhmg::Json j = hhmg::analysisToJson (hhmg::analyzeNotes (chords, melody, c->result.request.bpm, *lib));
+    j.set ("ok", true);
+    return j;
+}
+
+String HipHopMidiProcessor::importAnalysisSummary() const
+{
+    if (! importAnalysis) return {};
+    const auto& a = *importAnalysis;
+    static const char* names[] = { "R&B", "Trap", "Hip-Hop" };
+    int top = a.topStyle == "rnb" ? 0 : a.topStyle == "trap" ? 1 : 2;
+    String s = String (hhmg::noteName (a.root)) + " " + hhmg::allScales()[(size_t) a.scale].label + ", " + (a.bpmKnown ? String (a.bpm, 0) + " BPM" : String ("no tempo in file")) + "  -  looks like "
+               + names[top] + " (R&B " + String ((int) std::lround (a.style.rnb * 100)) + "%, Trap " + String ((int) std::lround (a.style.trap * 100))
+               + "%, Hip-Hop " + String ((int) std::lround (a.style.hiphop * 100)) + "%)";
+    if (! a.reasons.empty()) s += ".  " + String (a.reasons.front());
+    return s;
+}
+
+void HipHopMidiProcessor::matchImportedStyle()
+{
+    if (! importAnalysis) return;
+    applyRequestToParameters (importAnalysis->suggested);
+    refProgression = importAnalysis->suggested.progression;
+    refHookRhythm = importAnalysis->suggested.hookRhythm;
+    generate (false);
 }
 
 File HipHopMidiProcessor::exportTempMidi() const
@@ -348,7 +399,8 @@ struct HipHopMidiProcessor::AiThread : public Thread
     void run() override
     {
         auto lib = std::atomic_load (&owner.library);
-        auto outcome = AiBridge::run (settings, prompt, ctx, *lib, [this] { return threadShouldExit(); });
+        auto outcome = AiBridge::run (settings, prompt, ctx, *lib, [this] { return threadShouldExit(); },
+                                      [this] { return owner.analyzeClipJson(); });
         if (threadShouldExit()) return;
         WeakReference<HipHopMidiProcessor> ref (&owner);
         auto cb = done;
@@ -408,6 +460,7 @@ void HipHopMidiProcessor::askAi (const String& prompt, std::function<void (const
     ctx.set ("scale", hhmg::allScales()[(size_t) r.scale].id);
     ctx.set ("bpm", r.bpm); ctx.set ("bars", r.bars);
     ctx.set ("complexity", r.complexity); ctx.set ("humanize", r.humanize); ctx.set ("swing", r.swing);
+    if (importAnalysis) ctx.set ("imported_clip", hhmg::analysisToJson (*importAnalysis));
     aiThread = std::make_unique<AiThread> (*this);
     aiThread->settings = loadAiSettings();
     aiThread->prompt = prompt;
