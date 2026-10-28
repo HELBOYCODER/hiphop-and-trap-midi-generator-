@@ -269,6 +269,22 @@ Result generate(const Request& in, const PatternLibrary& lib) {
                 if (i > 0 && (std::abs(d - prev) == 1 ? rng.chance(0.8) : rng.chance(0.3))) d = prev;  // hooks repeat; they do not walk the scale
                 cell.push_back(d); prev = d;
             }
+            // Learned data shapes the hook: with a library motif (weighted by style) the cell follows a
+            // real producer's contour instead of the hand-made palette.
+            {
+                std::vector<const Motif*> mp; std::vector<double> mw;
+                for (const auto& m : lib.motifs) if (m.style != "rnb" || mix.rnb > 0.5) { mp.push_back(&m); mw.push_back(styleWeight(mix, m.style) + 1e-3); }
+                if (!mp.empty() && rng.chance(0.6)) {
+                    const Motif& m = *mp[rng.pick(mw)];
+                    cell.clear();
+                    int acc = 0;
+                    for (size_t i = 0; i < m.steps.size() && i < 5; ++i) {
+                        acc += m.steps[i];
+                        acc = std::max(-3, std::min(5, acc));
+                        cell.push_back(acc);
+                    }
+                }
+            }
             const Rhythm* rhA = pickRhythm(1, 3.0 + 2.0 * cx);
             const Rhythm* rhB = pickRhythm(1, 2.5 + 2.0 * cx);
             if (!rhA) rhA = rhB;

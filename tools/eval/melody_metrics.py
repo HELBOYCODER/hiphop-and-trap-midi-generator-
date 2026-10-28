@@ -62,6 +62,7 @@ def main():
     ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--bars", type=int, default=4)
     ap.add_argument("--complexity", type=float, default=0.5)
+    ap.add_argument("--patterns", help="optional patterns.json for hhmg-cli")
     a = ap.parse_args()
     rows = []
     with tempfile.TemporaryDirectory() as d:
@@ -69,7 +70,7 @@ def main():
             path = os.path.join(d, "x.mid")
             req = {"root": i % 12, "scale": a.scale, "style": a.style, "bars": a.bars, "seed": i + 1,
                    "chords": False, "melody": True, "humanize": 0.2, "complexity": a.complexity, "output_path": path}
-            subprocess.run([a.cli, "call", "generate_midi"], input=json.dumps(req), capture_output=True, text=True, check=True)
+            subprocess.run([a.cli, "call", "generate_midi"] + (["--patterns", a.patterns] if a.patterns else []), input=json.dumps(req), capture_output=True, text=True, check=True)
             notes, ppq = melody_notes(path)
             r = metrics(notes, ppq, a.bars)
             if r:

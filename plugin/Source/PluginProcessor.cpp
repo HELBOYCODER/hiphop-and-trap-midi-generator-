@@ -71,6 +71,8 @@ HipHopMidiProcessor::HipHopMidiProcessor()
     auto lib = std::make_shared<hhmg::PatternLibrary> (hhmg::PatternLibrary::builtin());
     try { lib->mergeJson (hhmg::Json::parse (std::string (BinaryData::patterns_pop909_json, (size_t) BinaryData::patterns_pop909_jsonSize))); }
     catch (const std::exception&) {}
+    try { lib->mergeJson (hhmg::Json::parse (std::string (BinaryData::patterns_cymatics_json, (size_t) BinaryData::patterns_cymatics_jsonSize))); }
+    catch (const std::exception&) {}
     auto def = defaultDatasetFile();
     if (def.existsAsFile())
     {

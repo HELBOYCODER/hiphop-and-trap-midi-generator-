@@ -13,3 +13,10 @@ Reproduce:
 
 It is compiled into the plugin and can be passed to the CLI with `--patterns data/patterns.pop909.json`.
 `data/raw/` and `data/telegram/` are git-ignored: put third-party packs there, never commit them.
+
+`patterns.cymatics.json` — the same kind of abstract statistics from the Cymatics free MIDI packs provided by the
+project owner (who states they hold the licence): *Essential MIDI Collection Bundle*, *Scarlet Instrument Loops & MIDI*,
+*Moonlight Instrument Loops & MIDI* (418 files). 222 progressions, 160 rhythms, 140 motifs, tagged both `trap` and
+`hiphop` (an assumption: the packs carry no style label). The MIDI files themselves are **not** in this repository.
+Not used: *Vibrance* (San Holo / future bass, off-genre), *Zodiac Platinum* (WAV only), *Hyperion* (MIDI inside the
+archive is password-protected - not opened), and the large paid-looking packs. Both JSON files are compiled into the plugin.
