@@ -107,9 +107,23 @@ Result generate(const Request& in, const PatternLibrary& lib) {
         int ext = 0;
         if (rng.chance(ext7)) { ext = 1; if (rng.chance(ext9)) { ext = 2; if (rng.chance(ext11)) ext = 3; } }
         bool spread = rng.chance(0.25 + 0.5 * mix.rnb);
-        int inv = rng.chance(cx * 0.6) ? rng.range(0, 2) : 0;
         int centre = mix.trap > 0.5 ? 57 : 60;
-        Segment sg{a, b - a, buildChord(sc, degree1 - 1, ext, inv, spread, centre), degree1};
+        // Voice leading: pick the inversion whose voices travel least from the previous chord
+        // (common tones stay put), so progressions sound connected instead of jumping.
+        Chord chord = buildChord(sc, degree1 - 1, ext, 0, spread, centre);
+        if (!segs.empty()) {
+            const auto& prev = segs.back().chord.pitches;
+            double best = 1e9;
+            for (int inv = 0; inv <= 2; ++inv) {
+                Chord c = buildChord(sc, degree1 - 1, ext, inv, spread, centre);
+                double cost = 0;
+                size_t n = std::min(prev.size(), c.pitches.size());
+                for (size_t k = 0; k < n; ++k) cost += std::abs(c.pitches[k] - prev[k]);
+                cost += 0.5 * std::abs(c.pitches.front() - prev.front());
+                if (cost < best) { best = cost; chord = c; }
+            }
+        }
+        Segment sg{a, b - a, chord, degree1};
         segs.push_back(sg);
         res.chordNames.push_back(sg.chord.name);
         res.degrees.push_back(degree1);
