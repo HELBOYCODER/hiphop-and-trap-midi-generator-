@@ -3,10 +3,12 @@
 #include "hhmg/Tools.h"
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 
 using namespace hhmg;
 
 static int failures = 0;
+static std::string tmpFile(const char* name) { return (std::filesystem::temp_directory_path() / name).string(); }
 #define CHECK(cond, ...) do { if (!(cond)) { ++failures; std::printf("FAIL %s:%d  %s  ", __FILE__, __LINE__, #cond); std::printf(__VA_ARGS__); std::printf("\n"); } } while (0)
 
 int main() {
@@ -66,7 +68,9 @@ int main() {
       CHECK(s["notes"].at(1).integer() == 60 && s["notes"].at(2).integer() == 62 && s["notes"].at(3).integer() == 65, "snap values %s", s.dump().c_str());
       Json bad = callTool("scale_notes", Json::parse("{\"root\":\"H\",\"scale\":\"major\"}"), lib);
       CHECK(!bad["ok"].boolean(true), "bad root rejected");
-      Json g = callTool("generate_midi", Json::parse("{\"root\":\"F#\",\"scale\":\"phrygian\",\"bars\":4,\"style\":\"trap\",\"bass\":true,\"output_path\":\"/tmp/hhmg_test.mid\"}"), lib);
+      Json ga = Json::parse("{\"root\":\"F#\",\"scale\":\"phrygian\",\"bars\":4,\"style\":\"trap\",\"bass\":true}");
+      ga.set("output_path", tmpFile("hhmg_test.mid"));
+      Json g = callTool("generate_midi", ga, lib);
       CHECK(g["ok"].boolean() && g["out_of_scale_notes"].integer() == 0, "generate_midi %s", g.dump().c_str());
       CHECK(toolSchemas().size() >= 6, "schemas");
       Json rt = Json::parse(lib.toJson().dump());
@@ -122,8 +126,9 @@ int main() {
 
       // tools: analyze_midi + references
       Request rq; rq.seed = 9; Result res = generate(rq, lib);
-      writeMidiFile(res, "/tmp/hhmg_an.mid");
-      Json an = callTool("analyze_midi", Json::parse("{\"path\":\"/tmp/hhmg_an.mid\"}"), lib);
+      writeMidiFile(res, tmpFile("hhmg_an.mid"));
+      Json anArgs = Json::object(); anArgs.set("path", tmpFile("hhmg_an.mid"));
+      Json an = callTool("analyze_midi", anArgs, lib);
       CHECK(an["ok"].boolean() && an["suggested_generate_midi_settings"]["scale"].isString(), "analyze_midi %s", an.dump().c_str());
       CHECK(!callTool("analyze_midi", Json::parse("{\"path\":\"/etc/passwd\"}"), lib)["ok"].boolean(true), "analyze_midi refuses non-midi");
       PatternLibrary lib2 = lib;
