@@ -11,8 +11,9 @@ const char* kSystemPrompt =
     "(major, minor, harmonic_minor, melodic_minor, dorian, phrygian, lydian, mixolydian, locrian, phrygian_dominant, pentatonic_major, "
     "pentatonic_minor, blues), a style blend (rnb/trap/hiphop 0-1), complexity, humanize, swing, velocity_variation, bars, bpm, "
     "chord/melody/808 parts, an optional chord progression of degrees 1-7, and reference ids for progression and rhythm. "
-    "Workflow: (1) If the user mentions a MIDI file, a reference, 'this clip' or has imported/generated something, call analyze_current_clip "
-    "(or analyze_midi with a path) to recognise its style: key, mode, BPM, chord degrees, swing, looseness and R&B/Trap/Hip-Hop scores. "
+    "Workflow: (1) If the user mentions a MIDI file, a recording, a reference, 'this clip' or has imported/recorded/generated something, call analyze_current_clip "
+    "(or analyze_midi / analyze_audio with a path) to recognise its style: key, mode, BPM, chord degrees, swing, looseness and R&B/Trap/Hip-Hop scores. "
+    "When they want something like their own clip, call similar_to_current_clip (it draws on the learned reference dataset). "
     "(2) Call style_guide with the user's words (any language) for matching recipes; call find_references to find real loops with a similar "
     "key, tempo and style. (3) To combine things, call generate_midi once, taking the progression from one reference (reference_progression), "
     "the melody rhythm from another (reference_rhythm), and the sound settings from the analysis or recipe. Explicit user values always win. "
@@ -67,7 +68,7 @@ hhmg::Json toolsForOpenAi()
 
 // Runs one tool for the model. generate_midi is intercepted so nothing is written to disk.
 hhmg::Json execTool (const std::string& name, hhmg::Json args, const hhmg::PatternLibrary& lib, Outcome& out,
-                     const std::function<hhmg::Json()>& analyzeClip)
+                     const ClipTools& clipTools)
 {
     if (name == "generate_midi")
     {
@@ -85,7 +86,9 @@ hhmg::Json execTool (const std::string& name, hhmg::Json args, const hhmg::Patte
         if (! refNote.empty()) j.set ("used_references", refNote);
         return j;
     }
-    if (name == "analyze_current_clip" && analyzeClip) return analyzeClip();
+    if (name == "analyze_current_clip" && clipTools.analyze) return clipTools.analyze();
+    if (name == "similar_to_current_clip" && clipTools.similar) return clipTools.similar (args);
+    args.set ("output_path", "");   // a model must never write files on the user's computer
     return hhmg::callTool (name, args, lib);
 }
 
@@ -124,7 +127,7 @@ juce::String errorText (const HttpReply& r)
 
 Outcome runGemini (const Settings& s, const juce::String& prompt, const juce::String& ctx,
                    const hhmg::PatternLibrary& lib, const std::function<bool()>& cancel,
-                   const std::function<hhmg::Json()>& analyzeClip)
+                   const ClipTools& clipTools)
 {
     using hhmg::Json;
     Outcome out;
@@ -171,7 +174,7 @@ Outcome runGemini (const Settings& s, const juce::String& prompt, const juce::St
             if (part["functionCall"].isObject())
             {
                 const Json& fc = part["functionCall"];
-                Json result = execTool (fc["name"].str(), fc["args"].isObject() ? fc["args"] : Json::object(), lib, out, analyzeClip);
+                Json result = execTool (fc["name"].str(), fc["args"].isObject() ? fc["args"] : Json::object(), lib, out, clipTools);
                 Json fr = Json::object(); fr.set ("name", fc["name"]); fr.set ("response", result);
                 Json rp = Json::object(); rp.set ("functionResponse", fr);
                 responses.push (rp);
@@ -195,7 +198,7 @@ Outcome runGemini (const Settings& s, const juce::String& prompt, const juce::St
 
 Outcome runOpenAi (const Settings& s, const juce::String& prompt, const juce::String& ctx,
                    const hhmg::PatternLibrary& lib, const std::function<bool()>& cancel,
-                   const std::function<hhmg::Json()>& analyzeClip)
+                   const ClipTools& clipTools)
 {
     using hhmg::Json;
     Outcome out;
@@ -241,7 +244,7 @@ Outcome runOpenAi (const Settings& s, const juce::String& prompt, const juce::St
         {
             Json args = Json::object();
             try { args = Json::parse (call["function"]["arguments"].str ("{}")); } catch (...) {}
-            Json result = execTool (call["function"]["name"].str(), args, lib, out, analyzeClip);
+            Json result = execTool (call["function"]["name"].str(), args, lib, out, clipTools);
             Json m = Json::object();
             m.set ("role", "tool"); m.set ("tool_call_id", call["id"]); m.set ("content", result.dump());
             messages.push (m);
@@ -255,15 +258,15 @@ Outcome runOpenAi (const Settings& s, const juce::String& prompt, const juce::St
 
 Outcome run (const Settings& settings, const juce::String& prompt, const juce::String& ctx,
              const hhmg::PatternLibrary& lib, const std::function<bool()>& cancel,
-             const std::function<hhmg::Json()>& analyzeClip)
+             const ClipTools& clipTools)
 {
     if (prompt.trim().isEmpty()) return { false, "Type a prompt first.", std::nullopt };
     if (settings.provider == Provider::gemini && settings.apiKey.trim().isEmpty())
         return { false, "Enter your Gemini API key (or set the GEMINI_API_KEY environment variable).", std::nullopt };
     try
     {
-        return settings.provider == Provider::gemini ? runGemini (settings, prompt, ctx, lib, cancel, analyzeClip)
-                                                     : runOpenAi (settings, prompt, ctx, lib, cancel, analyzeClip);
+        return settings.provider == Provider::gemini ? runGemini (settings, prompt, ctx, lib, cancel, clipTools)
+                                                     : runOpenAi (settings, prompt, ctx, lib, cancel, clipTools);
     }
     catch (const std::exception& e)
     {

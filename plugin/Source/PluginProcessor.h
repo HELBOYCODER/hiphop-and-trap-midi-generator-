@@ -2,7 +2,11 @@
 #include "AiBridge.h"
 #include "PresetManager.h"
 #include <hhmg/Analyze.h>
+#include <hhmg/AudioRead.h>
+#include <hhmg/Library.h>
+#include <hhmg/Studio.h>
 #include <hhmg/Tools.h>
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <atomic>
 #include <memory>
@@ -50,6 +54,19 @@ public:
     void setResult (const hhmg::Result& r);
     void applyRequestToParameters (const hhmg::Request& r);
     bool importMidiFile (const juce::File& file);
+    // ---- voice / audio -> MIDI (import a recording, or record the plugin's audio input)
+    void importAudioAsync (const juce::File& file, std::function<void (juce::String)> done);
+    bool isRecordingInput() const { return recordingInput.load(); }
+    void startInputRecording();
+    void stopInputRecording (std::function<void (juce::String)> done);
+    bool hasVoice() const { return std::atomic_load (&voice) != nullptr; }
+    juce::String makeFromVoice (bool newSeed);            // transcription -> studio pipeline (mode = "voiceMode" parameter)
+    juce::String voiceSummary() const;
+    // ---- your own MIDI dataset (profiles only, notes are not kept); saved to Documents/HipHopMidiGenerator/user_library.json
+    void addMidiFolderAsync (const juce::File& dir, std::function<void (juce::String)> done);
+    juce::File userLibraryFileForTest() const { return userLibraryFile(); }
+    hhmg::Json similarForAi (const hhmg::Json& options);  // AI tool: similar_to_current_clip (called on the AI thread)
+
     // style recognition
     hhmg::Json analyzeClipJson() const;                   // thread-safe; analyses the loaded clip
     bool hasImportAnalysis() const { return importAnalysis.has_value(); }
@@ -85,6 +102,16 @@ private:
     std::shared_ptr<const hhmg::PatternLibrary> library;
     std::shared_ptr<const Clip> clip;
     std::optional<hhmg::Analysis> importAnalysis;
+    std::shared_ptr<const hhmg::Transcription> voice;
+    hhmg::Json voiceAnalysis, voiceInspiredBy;
+    std::shared_ptr<hhmg::PatternLibrary> userLibrary = std::make_shared<hhmg::PatternLibrary>();
+    std::atomic<bool> recordingInput { false };
+    std::vector<float> recBuffer;
+    std::atomic<int> recCount { 0 };
+    double recRate = 44100.0;
+    void applyStudioResult (const hhmg::Json& studioResult);
+    void processVoiceSamples (std::vector<float> mono, int sampleRate, juce::String sourceName, std::function<void (juce::String)> done);
+    juce::File userLibraryFile() const;
 
     std::atomic<double> hostBpm { 120.0 };
     double sampleRate = 44100.0;

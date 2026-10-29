@@ -58,12 +58,14 @@ AudioProcessorValueTreeState::ParameterLayout HipHopMidiProcessor::createLayout(
     p.push_back (std::make_unique<AudioParameterInt> (ParameterID { "octave", 1 }, "Melody Octave", 3, 7, 5));
     p.push_back (std::make_unique<AudioParameterInt> (ParameterID { "seed", 1 }, "Seed", 0, 99999, 1));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "playback", 1 }, "Playback", true));
+    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "voiceMode", 1 }, "Voice Mode",
+                                                         StringArray { "My melody", "Melody + chords/808", "Similar idea" }, 2));
     return { p.begin(), p.end() };
 }
 
 // ---------------------------------------------------------------------------------------------------
 HipHopMidiProcessor::HipHopMidiProcessor()
-    : AudioProcessor (BusesProperties().withOutput ("Output", AudioChannelSet::stereo(), true)),
+    : AudioProcessor (BusesProperties().withInput ("Input", AudioChannelSet::stereo(), false).withOutput ("Output", AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "STATE", createLayout()),
       presets (apvts)
 {
@@ -79,6 +81,17 @@ HipHopMidiProcessor::HipHopMidiProcessor()
         try { lib->mergeJson (hhmg::Json::parse (def.loadFileAsString().toStdString())); }
         catch (const std::exception&) {}
     }
+    try
+    {
+        auto uf = userLibraryFile();
+        if (uf.existsAsFile())
+        {
+            auto j = hhmg::Json::parse (uf.loadFileAsString().toStdString());
+            lib->mergeJson (j);
+            userLibrary->mergeJson (j);
+        }
+    }
+    catch (const std::exception&) {}
     library = lib;
     generate (false);
 }
@@ -87,12 +100,17 @@ HipHopMidiProcessor::~HipHopMidiProcessor() { cancelAi(); }
 
 bool HipHopMidiProcessor::isBusesLayoutSupported (const BusesLayout& l) const
 {
-    return l.getMainOutputChannelSet() == AudioChannelSet::stereo() || l.getMainOutputChannelSet().isDisabled();
+    auto in = l.getMainInputChannelSet();
+    const bool inOk = in.isDisabled() || in == AudioChannelSet::mono() || in == AudioChannelSet::stereo();
+    return inOk && (l.getMainOutputChannelSet() == AudioChannelSet::stereo() || l.getMainOutputChannelSet().isDisabled());
 }
 
 void HipHopMidiProcessor::prepareToPlay (double sr, int)
 {
     sampleRate = sr;
+    recRate = sr;
+    recBuffer.assign ((size_t) (sr * 90.0), 0.0f);          // preallocated: the audio thread never allocates
+    recCount.store (0);
     wasPlaying = false;
     expectedPpq = -1.0;
     std::memset (sounding, 0, sizeof sounding);
@@ -110,8 +128,21 @@ void HipHopMidiProcessor::silenceAll (MidiBuffer& out, int pos)
 void HipHopMidiProcessor::processBlock (AudioBuffer<float>& audio, MidiBuffer& midi)
 {
     ScopedNoDenormals noDenormals;
-    audio.clear();
     const int numSamples = audio.getNumSamples();
+    if (recordingInput.load() && getTotalNumInputChannels() > 0 && ! recBuffer.empty())
+    {
+        const int c = recCount.load();
+        const int take = jmin (numSamples, (int) recBuffer.size() - c);
+        const int chans = jmin (2, audio.getNumChannels());
+        for (int i = 0; i < take; ++i)
+        {
+            float v = 0.0f;
+            for (int ch = 0; ch < chans; ++ch) v += audio.getSample (ch, i);
+            recBuffer[(size_t) (c + i)] = v / (float) jmax (1, chans);
+        }
+        recCount.store (c + take);
+    }
+    audio.clear();
 
     // 1. live MIDI input -> optional scale lock (note-offs follow the note-on's snapped pitch)
     MidiBuffer out;
@@ -392,6 +423,186 @@ String HipHopMidiProcessor::libraryInfo() const
            + String ((int) l->motifs.size()) + " motifs";
 }
 
+
+// ---- voice / audio -> MIDI ----------------------------------------------------------------------------------
+File HipHopMidiProcessor::userLibraryFile() const
+{
+    return File::getSpecialLocation (File::userDocumentsDirectory).getChildFile ("HipHopMidiGenerator").getChildFile ("user_library.json");
+}
+
+void HipHopMidiProcessor::processVoiceSamples (std::vector<float> mono, int sr, String name, std::function<void (String)> done)
+{
+    WeakReference<HipHopMidiProcessor> ref (this);
+    Thread::launch ([ref, mono = std::move (mono), sr, name, done]
+    {
+        hhmg::TranscribeOptions to;
+        auto tr = std::make_shared<hhmg::Transcription> (hhmg::transcribeAudio (mono, sr, to));
+        MessageManager::callAsync ([ref, tr, name, done]
+        {
+            if (ref == nullptr) return;
+            String msg;
+            if (! tr->error.empty()) msg = "Could not use " + name + ": " + String (tr->error);
+            else
+            {
+                std::atomic_store (&ref->voice, std::static_pointer_cast<const hhmg::Transcription> (tr));
+                msg = "Heard " + String ((int) tr->notes.size()) + " notes from " + name + ". " + ref->makeFromVoice (false);
+            }
+            if (done) done (msg);
+        });
+    });
+}
+
+void HipHopMidiProcessor::importAudioAsync (const File& file, std::function<void (String)> done)
+{
+    WeakReference<HipHopMidiProcessor> ref (this);
+    Thread::launch ([ref, file, done]
+    {
+        AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::unique_ptr<AudioFormatReader> reader (fm.createReaderFor (file));
+        if (reader == nullptr)
+        {
+            MessageManager::callAsync ([done, file] { if (done) done ("Cannot read " + file.getFileName() + " (use WAV, AIFF, FLAC, OGG or MP3)."); });
+            return;
+        }
+        const int sr = (int) reader->sampleRate;
+        const int len = (int) jmin<int64> (reader->lengthInSamples, (int64) sr * 90);
+        AudioBuffer<float> buf ((int) jmax<unsigned int> (1u, reader->numChannels), len);
+        reader->read (&buf, 0, len, 0, true, true);
+        std::vector<float> mono ((size_t) len, 0.0f);
+        for (int i = 0; i < len; ++i)
+        {
+            float v = 0;
+            for (int c = 0; c < buf.getNumChannels(); ++c) v += buf.getSample (c, i);
+            mono[(size_t) i] = v / (float) buf.getNumChannels();
+        }
+        MessageManager::callAsync ([ref, mono = std::move (mono), sr, file, done]() mutable
+        {
+            if (ref == nullptr) return;
+            ref->processVoiceSamples (std::move (mono), sr, file.getFileName(), done);
+        });
+    });
+}
+
+void HipHopMidiProcessor::startInputRecording()
+{
+    recCount.store (0);
+    recordingInput.store (true);
+}
+
+void HipHopMidiProcessor::stopInputRecording (std::function<void (String)> done)
+{
+    recordingInput.store (false);
+    const int n = recCount.load();
+    if (n < (int) recRate / 2)
+    {
+        if (done) done ("Nothing was recorded. The plugin hears only what the DAW sends to its audio input: route a vocal track to it (enable the plugin's input / sidechain), or use Import audio.");
+        return;
+    }
+    std::vector<float> mono (recBuffer.begin(), recBuffer.begin() + n);
+    processVoiceSamples (std::move (mono), (int) recRate, "your recording", std::move (done));
+}
+
+String HipHopMidiProcessor::makeFromVoice (bool newSeed)
+{
+    auto tr = std::atomic_load (&voice);
+    if (tr == nullptr) return "Import or record some audio first.";
+    if (newSeed)
+        if (auto* p = apvts.getParameter ("seed"))
+            p->setValueNotifyingHost (p->convertTo0to1 ((float) Random::getSystemRandom().nextInt (100000)));
+    static const char* modes[] = { "melody", "melody_plus", "similar" };
+    const int mi = jlimit (0, 2, (int) apvts.getRawParameterValue ("voiceMode")->load());
+    hhmg::Json opt = hhmg::Json::object();
+    opt.set ("seed", (int) apvts.getRawParameterValue ("seed")->load());
+    opt.set ("bass", apvts.getRawParameterValue ("bass")->load() > 0.5f);
+    opt.set ("scale_lock", apvts.getRawParameterValue ("scaleLock")->load() > 0.5f);
+    opt.set ("keep_bpm", mi != 2 || ! tr->bpmEstimated);
+    opt.set ("use_dataset", true);
+    // the style knobs steer "similar": a clear winner among the three is passed on
+    const float r = apvts.getRawParameterValue ("rnb")->load(), t = apvts.getRawParameterValue ("trap")->load(), h = apvts.getRawParameterValue ("hiphop")->load();
+    if (mi == 2) opt.set ("style", t >= r && t >= h ? "trap" : h >= r ? "hiphop" : "rnb");
+    auto res = hhmg::studioProcess (modes[mi], tr->notes, tr->bpm, ! tr->bpmEstimated, opt, *std::atomic_load (&library));
+    if (! res["ok"].boolean (false)) return String (res["error"].str ("could not build MIDI"));
+    applyStudioResult (res);
+    return voiceSummary();
+}
+
+void HipHopMidiProcessor::applyStudioResult (const hhmg::Json& r)
+{
+    hhmg::Result res;
+    res.request = buildRequest();
+    std::vector<hhmg::Note> notes;
+    int bpm = 120, bars = 4;
+    if (! hhmg::clipFromJson (r["clip"], notes, bpm, bars)) return;
+    res.notes = notes;
+    res.request.bpm = bpm;
+    res.request.bars = bars;
+    res.request.root = r["root"].integer (res.request.root);
+    res.request.scale = r["scale_index"].integer (res.request.scale);
+    res.scale = hhmg::Scale { res.request.root, res.request.scale };
+    res.description = r["clip"]["description"].str ("");
+    for (const auto& c : r["chords"].items()) res.chordNames.push_back (c.str (""));
+    voiceAnalysis = r["analysis"];
+    voiceInspiredBy = r["inspired_by"];
+    applyRequestToParameters (res.request);
+    setResult (res);
+}
+
+String HipHopMidiProcessor::voiceSummary() const
+{
+    if (! voiceAnalysis.isObject()) return {};
+    String s = String (voiceAnalysis["key"].str ("")) + ", " + String (voiceAnalysis["detected_style"].str ("")) + " feel";
+    if (voiceInspiredBy.isObject()) s += ". Inspired by \"" + String (voiceInspiredBy["name"].str ("")) + "\" (" + String (voiceInspiredBy["pack"].str ("")) + ")";
+    return s;
+}
+
+hhmg::Json HipHopMidiProcessor::similarForAi (const hhmg::Json& options)
+{
+    auto c = getClip();
+    hhmg::Json e = hhmg::Json::object();
+    if (c == nullptr || c->result.notes.empty()) { e.set ("ok", false); e.set ("error", "no clip loaded"); return e; }
+    auto clipJson = hhmg::clipToJson (c->result.notes, c->result.request.bpm, c->result.request.bars, c->result.description);
+    hhmg::Json opt = options;
+    if (! opt.has ("seed")) opt.set ("seed", (int) Random::getSystemRandom().nextInt (1000));
+    auto res = hhmg::similarToClip (clipJson, opt, *std::atomic_load (&library));
+    if (! res["ok"].boolean (false)) return res;
+    WeakReference<HipHopMidiProcessor> ref (this);
+    MessageManager::callAsync ([ref, res] { if (ref != nullptr) ref->applyStudioResult (res); });
+    hhmg::Json out = hhmg::Json::object();
+    for (size_t i = 0; i < res.keys().size(); ++i) if (res.keys()[i] != "clip") out.set (res.keys()[i], res.valueAt (i));
+    out.set ("applied", true);
+    return out;
+}
+
+void HipHopMidiProcessor::addMidiFolderAsync (const File& dir, std::function<void (String)> done)
+{
+    WeakReference<HipHopMidiProcessor> ref (this);
+    auto baseLib = std::atomic_load (&library);
+    auto baseUser = std::make_shared<hhmg::PatternLibrary> (*userLibrary);
+    Thread::launch ([ref, dir, done, baseLib, baseUser]
+    {
+        auto lib2 = std::make_shared<hhmg::PatternLibrary> (*baseLib);
+        std::string err;
+        const int n = hhmg::indexMidiFolder (dir.getFullPathName().toStdString(), *lib2, baseUser.get(), 5000, err);
+        MessageManager::callAsync ([ref, dir, done, lib2, baseUser, n, err]
+        {
+            if (ref == nullptr) return;
+            String msg;
+            if (n > 0)
+            {
+                std::atomic_store (&ref->library, std::static_pointer_cast<const hhmg::PatternLibrary> (lib2));
+                ref->userLibrary = baseUser;
+                auto f = ref->userLibraryFile();
+                f.getParentDirectory().createDirectory();
+                f.replaceWithText (String (baseUser->toJson().dump()));
+                msg = "Indexed " + String (n) + " MIDI files from " + dir.getFileName() + " (profiles only, notes are not stored). Library: " + ref->libraryInfo();
+            }
+            else msg = "No new MIDI files indexed from " + dir.getFileName() + (err.empty() ? "" : " (" + String (err) + ")");
+            if (done) done (msg);
+        });
+    });
+}
+
 // ---- AI ------------------------------------------------------------------------------------------------------------
 struct HipHopMidiProcessor::AiThread : public Thread
 {
@@ -399,8 +610,10 @@ struct HipHopMidiProcessor::AiThread : public Thread
     void run() override
     {
         auto lib = std::atomic_load (&owner.library);
-        auto outcome = AiBridge::run (settings, prompt, ctx, *lib, [this] { return threadShouldExit(); },
-                                      [this] { return owner.analyzeClipJson(); });
+        AiBridge::ClipTools tools;
+        tools.analyze = [this] { return owner.analyzeClipJson(); };
+        tools.similar = [this] (const hhmg::Json& o) { return owner.similarForAi (o); };
+        auto outcome = AiBridge::run (settings, prompt, ctx, *lib, [this] { return threadShouldExit(); }, tools);
         if (threadShouldExit()) return;
         WeakReference<HipHopMidiProcessor> ref (&owner);
         auto cb = done;
@@ -461,6 +674,7 @@ void HipHopMidiProcessor::askAi (const String& prompt, std::function<void (const
     ctx.set ("bpm", r.bpm); ctx.set ("bars", r.bars);
     ctx.set ("complexity", r.complexity); ctx.set ("humanize", r.humanize); ctx.set ("swing", r.swing);
     if (importAnalysis) ctx.set ("imported_clip", hhmg::analysisToJson (*importAnalysis));
+    if (voiceAnalysis.isObject()) ctx.set ("recorded_voice", voiceAnalysis);
     aiThread = std::make_unique<AiThread> (*this);
     aiThread->settings = loadAiSettings();
     aiThread->prompt = prompt;

@@ -11,7 +11,7 @@ double clamp01(double v) { return std::max(0.0, std::min(1.0, v)); }
 
 } // namespace
 
-Analysis analyzeNotes(const std::vector<Note>& chords, const std::vector<Note>& melody, double bpm, const PatternLibrary& lib, bool bpmKnown) {
+Analysis analyzeNotes(const std::vector<Note>& chords, const std::vector<Note>& melody, double bpm, const PatternLibrary& lib, bool bpmKnown, int forcedRoot, int forcedScale) {
     Analysis a;
     a.bpm = bpm;
     a.bpmKnown = bpmKnown;
@@ -62,6 +62,7 @@ Analysis analyzeNotes(const std::vector<Note>& chords, const std::vector<Note>& 
             double score = 20 * fit + 3.0 * bass + 1.5 * tonicShare + (firstBass == r ? 1.5 : 0) + c.prior;
             if (score > bestKeyScore) { bestKeyScore = score; bRoot = r; bScale = sc.index; }
         }
+    if (forcedRoot >= 0 && forcedScale >= 0) { bRoot = forcedRoot; bScale = forcedScale; }
     a.root = bRoot; a.scale = bScale;
     const Scale scale{a.root, a.scale};
 
@@ -185,7 +186,7 @@ Analysis analyzeNotes(const std::vector<Note>& chords, const std::vector<Note>& 
     return a;
 }
 
-Analysis analyzeMidi(const MidiData& midi, const PatternLibrary& lib) {
+Analysis analyzeMidi(const MidiData& midi, const PatternLibrary& lib, int forcedRoot, int forcedScale) {
     std::vector<Note> chords, melody, other;
     const int tol = kPPQ / 8;
     for (const auto& t : midi.tracks) {
@@ -202,7 +203,7 @@ Analysis analyzeMidi(const MidiData& midi, const PatternLibrary& lib) {
     }
     if (chords.empty() && melody.empty()) melody = other; // single odd track: treat as the lead
     std::sort(melody.begin(), melody.end(), [](const Note& a, const Note& b) { return a.start < b.start; });
-    return analyzeNotes(chords, melody, midi.bpm, lib, midi.hasTempo);
+    return analyzeNotes(chords, melody, midi.bpm, lib, midi.hasTempo, forcedRoot, forcedScale);
 }
 
 Json analysisToJson(const Analysis& a) {

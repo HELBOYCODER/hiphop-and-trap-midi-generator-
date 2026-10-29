@@ -17,6 +17,9 @@ Json transcriptionToJson(const Transcription& t); // contour + notes + bpm
 Json studioProcess(const std::string& mode, const std::vector<Note>& melody, double bpm, bool bpmKnown,
                    const Json& options, const PatternLibrary& lib);
 
+// "similar" for a clip already in the app: melody = its melody channel (or everything but bass), tempo = the clip's.
+Json similarToClip(const Json& clip, const Json& options, const PatternLibrary& lib);
+
 // analysis of an arbitrary clip (used by the AI's analyze_current_clip tool)
 Json analyzeClip(const Json& clip, const PatternLibrary& lib);
 

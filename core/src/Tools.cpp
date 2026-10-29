@@ -1,5 +1,7 @@
 #include "hhmg/Tools.h"
 #include "hhmg/Analyze.h"
+#include "hhmg/AudioRead.h"
+#include "hhmg/Studio.h"
 #include "hhmg/Guide.h"
 #include <algorithm>
 #include <cmath>
@@ -184,6 +186,29 @@ Json toolSchemas() {
     list.push(tool("analyze_midi", "Analyze a MIDI file: key/mode, BPM, chord degrees per bar, harmonic richness, swing, looseness, melodic repetition/space, R&B/Trap/Hip-Hop style scores with reasons, and the generate_midi settings that reproduce its feel.", am, {"path"}));
     list.push(tool("analyze_current_clip", "Analyze the clip currently loaded in the plugin (generated or imported MIDI) and return the same report as analyze_midi. Only available inside the plugin.", Json::object(), {}));
 
+    Json aa = Json::object();
+    aa.set("path", prop("string", "Path to a .wav recording (voice / humming)"));
+    list.push(tool("analyze_audio", "Transcribe a sung / hummed WAV recording into notes and recognise its key, BPM and R&B/Trap/Hip-Hop style (no MIDI is produced).", aa, {"path"}));
+
+    Json vm = Json::object();
+    vm.set("path", prop("string", "Path to a .wav recording"));
+    vm.set("mode", enumProp({"melody", "melody_plus", "similar"}, "melody = the sung line as MIDI; melody_plus = plus chords and 808; similar = a new idea in the same key, tempo, feel and rhythm, drawing on the dataset"));
+    vm.set("style", enumProp({"rnb", "trap", "hiphop"}, "Optional style override"));
+    vm.set("bpm", prop("number", "Tempo; omit to estimate"));
+    vm.set("seed", prop("integer", "Different seeds give different similar ideas"));
+    vm.set("bass", prop("boolean", "Add an 808 line"));
+    vm.set("use_dataset", prop("boolean", "similar: draw on the reference library (default true)"));
+    vm.set("output_path", prop("string", "If set, write a .mid file here"));
+    vm.set("include_notes", prop("boolean", "Return every note"));
+    list.push(tool("voice_to_midi", "Voice recording (.wav) -> MIDI: transcribe the melody, recognise the style, and output the melody, melody + chords/808, or a similar new idea.", vm, {"path"}));
+
+    Json sc2 = Json::object();
+    sc2.set("style", enumProp({"rnb", "trap", "hiphop"}, "Optional style override"));
+    sc2.set("seed", prop("integer", "Different seeds give different ideas"));
+    sc2.set("mode", enumProp({"similar", "melody_plus"}, "similar (default) or melody_plus"));
+    sc2.set("bass", prop("boolean", "Add an 808 line"));
+    list.push(tool("similar_to_current_clip", "Make a new idea similar to the clip currently loaded in the app (same key, tempo, feel and rhythm), drawing on the reference dataset. Only available inside the app.", sc2, {}));
+
     Json lp = Json::object();
     lp.set("style", enumProp({"rnb", "trap", "hiphop"}, "Optional style filter"));
     list.push(tool("list_patterns", "Summarise the rhythm / motif / progression library (built-in + learned dataset).", lp, {}));
@@ -291,6 +316,46 @@ Json callTool(const std::string& name, const Json& a, const PatternLibrary& lib)
             for (size_t i = 0; i < rep.keys().size(); ++i) out.set(rep.keys()[i], rep.valueAt(i));
         } else if (name == "analyze_current_clip") {
             return err("analyze_current_clip only works inside the plugin; use analyze_midi with a file path");
+        } else if (name == "analyze_audio" || name == "voice_to_midi") {
+            std::string path = a["path"].str("");
+            std::string low = path; for (auto& c : low) c = (char) std::tolower((unsigned char) c);
+            if (low.size() < 5 || low.substr(low.size() - 4) != ".wav") return err("only .wav recordings can be read here (export your voice as WAV)");
+            std::vector<float> samples; int sr = 0; std::string e;
+            if (!readWavFile(path, samples, sr, e)) return err(e);
+            TranscribeOptions to; to.bpm = a["bpm"].num(0);
+            Transcription tr = transcribeAudio(samples, sr, to);
+            if (!tr.error.empty()) return err(tr.error);
+            if (name == "analyze_audio") {
+                Analysis an = analyzeNotes({}, tr.notes, tr.bpm, lib, !tr.bpmEstimated);
+                Json rep = analysisToJson(an);
+                for (size_t i = 0; i < rep.keys().size(); ++i) out.set(rep.keys()[i], rep.valueAt(i));
+                out.set("transcribed_notes", (int) tr.notes.size()); out.set("tempo_estimated", tr.bpmEstimated);
+                return out;
+            }
+            Json opt = Json::object();
+            opt.set("style", a["style"].str("")); opt.set("seed", a.has("seed") ? a["seed"].integer() : 1);
+            opt.set("scale_lock", true); opt.set("use_dataset", a["use_dataset"].boolean(true));
+            const std::string mode = a["mode"].str("melody");
+            opt.set("keep_bpm", mode != "similar" || !tr.bpmEstimated);
+            if (a.has("bass")) opt.set("bass", a["bass"].boolean(true));
+            Json r = studioProcess(mode, tr.notes, tr.bpm, !tr.bpmEstimated, opt, lib);
+            if (!r["ok"].boolean(false)) return r;
+            for (size_t i = 0; i < r.keys().size(); ++i) if (r.keys()[i] != "clip") out.set(r.keys()[i], r.valueAt(i));
+            const Json& clip = r["clip"];
+            std::vector<Note> notes; int bpm = 120, bars = 4; clipFromJson(clip, notes, bpm, bars);
+            out.set("bpm", bpm); out.set("bars", bars); out.set("note_count", (int) notes.size());
+            out.set("description", clip["description"].str(""));
+            if (a["include_notes"].boolean(false)) out.set("clip", clip);
+            std::string outPath = a["output_path"].str("");
+            if (!outPath.empty()) {
+                auto bytes = clipToMidi(clip);
+                std::FILE* f = std::fopen(outPath.c_str(), "wb");
+                if (!f) return err("could not write " + outPath);
+                std::fwrite(bytes.data(), 1, bytes.size(), f); std::fclose(f);
+                out.set("midi_file", outPath);
+            }
+        } else if (name == "similar_to_current_clip") {
+            return err("similar_to_current_clip only works inside the app; use voice_to_midi with mode 'similar' and a .wav path");
         } else if (name == "list_patterns") {
             std::string st = a["style"].str("");
             int r = 0, m = 0, p = 0;

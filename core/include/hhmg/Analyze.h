@@ -24,8 +24,9 @@ struct Analysis {
 };
 
 // bpmKnown=false (e.g. a loop with no tempo event): tempo is ignored for style scoring and the suggestion uses a style-typical BPM.
-Analysis analyzeNotes(const std::vector<Note>& chords, const std::vector<Note>& melody, double bpm, const PatternLibrary& lib, bool bpmKnown = true);
-Analysis analyzeMidi(const MidiData& midi, const PatternLibrary& lib); // splits tracks into chord / melody roles
+Analysis analyzeNotes(const std::vector<Note>& chords, const std::vector<Note>& melody, double bpm, const PatternLibrary& lib, bool bpmKnown = true,
+                      int forcedRoot = -1, int forcedScale = -1); // forced key e.g. read from a file name ("... G Min")
+Analysis analyzeMidi(const MidiData& midi, const PatternLibrary& lib, int forcedRoot = -1, int forcedScale = -1); // splits tracks into chord / melody roles
 Json analysisToJson(const Analysis& a);
 
 } // namespace hhmg

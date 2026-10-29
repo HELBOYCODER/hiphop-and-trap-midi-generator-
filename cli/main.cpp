@@ -1,7 +1,10 @@
 // hhmg-cli: command line + stdio MCP server around the generator core.
 //   hhmg-cli tools                       print tool schemas
 //   hhmg-cli call <tool> [--patterns f]  read JSON args on stdin, print JSON result
-//   hhmg-cli mcp [--patterns f]          Model Context Protocol server over stdio
+//   hhmg-cli mcp [--patterns f] [--allow-index]   Model Context Protocol server over stdio
+//   hhmg-cli index <dir> [--out f.json]  index your own MIDI folder into reference profiles (no notes kept)
+//   hhmg-cli voice <file.wav> [--mode melody|melody_plus|similar] [--style s] [--seed n] [--out f.mid]
+#include "hhmg/Library.h"
 #include "hhmg/Tools.h"
 #include <fstream>
 #include <iostream>
@@ -9,17 +12,30 @@
 
 using namespace hhmg;
 
+static void mergeFile(PatternLibrary& lib, const std::string& path) {
+    std::ifstream f(path);
+    if (!f) { std::cerr << "cannot open patterns file " << path << "\n"; return; }
+    std::stringstream ss; ss << f.rdbuf();
+    try { lib.mergeJson(Json::parse(ss.str())); }
+    catch (const std::exception& e) { std::cerr << "patterns file ignored: " << e.what() << "\n"; }
+}
+
+// built-in seed library + HHMG_PATTERNS (':' or ';' separated files) + every --patterns / --user-library file
 static PatternLibrary loadLibrary(int argc, char** argv) {
     PatternLibrary lib = PatternLibrary::builtin();
-    for (int i = 1; i + 1 < argc; ++i) {
-        if (std::string(argv[i]) != "--patterns") continue;
-        std::ifstream f(argv[i + 1]);
-        if (!f) { std::cerr << "cannot open patterns file " << argv[i + 1] << "\n"; continue; }
-        std::stringstream ss; ss << f.rdbuf();
-        try { lib.mergeJson(Json::parse(ss.str())); }
-        catch (const std::exception& e) { std::cerr << "patterns file ignored: " << e.what() << "\n"; }
+    if (const char* env = std::getenv("HHMG_PATTERNS")) {
+        std::string e = env, cur;
+        for (char c : e + ":") { if (c == ':' || c == ';') { if (!cur.empty()) mergeFile(lib, cur); cur.clear(); } else cur += c; }
     }
+    for (int i = 1; i + 1 < argc; ++i)
+        if (std::string(argv[i]) == "--patterns" || std::string(argv[i]) == "--user-library") mergeFile(lib, argv[i + 1]);
     return lib;
+}
+
+static bool hasFlag(int argc, char** argv, const char* f) { for (int i = 1; i < argc; ++i) if (std::string(f) == argv[i]) return true; return false; }
+static std::string optValue(int argc, char** argv, const char* f, const std::string& def = "") {
+    for (int i = 1; i + 1 < argc; ++i) if (std::string(f) == argv[i]) return argv[i + 1];
+    return def;
 }
 
 static Json rpcResult(const Json& id, Json result) {
@@ -33,7 +49,7 @@ static Json rpcError(const Json& id, int code, const std::string& msg) {
     return r;
 }
 
-static int serveMcp(const PatternLibrary& lib) {
+static int serveMcp(PatternLibrary& lib, bool allowIndex) {
     std::string line;
     while (std::getline(std::cin, line)) {
         if (line.find_first_not_of(" \t\r\n") == std::string::npos) continue;
@@ -58,10 +74,29 @@ static int serveMcp(const PatternLibrary& lib) {
         } else if (method == "ping") {
             reply = rpcResult(id, Json::object());
         } else if (method == "tools/list") {
-            Json res = Json::object(); res.set("tools", toolSchemas());
+            Json tools = toolSchemas();
+            if (allowIndex) {   // opt-in: lets the agent read a folder of your MIDI files (profiles only, notes are not kept)
+                Json t = Json::object();
+                t.set("name", "index_midi_folder");
+                t.set("description", "Index every .mid file under a folder into reference profiles (key, chord degrees, rhythm; no notes) so find_references and similar mode can use them.");
+                Json p = Json::object(); Json path = Json::object(); path.set("type", "string"); path.set("description", "Folder path"); p.set("path", path);
+                Json sc = Json::object(); sc.set("type", "object"); sc.set("properties", p); Json rq = Json::array(); rq.push("path"); sc.set("required", rq);
+                t.set("inputSchema", sc);
+                tools.push(t);
+            }
+            Json res = Json::object(); res.set("tools", tools);
             reply = rpcResult(id, res);
         } else if (method == "tools/call") {
-            Json out = callTool(req["params"]["name"].str(""), req["params"]["arguments"], lib);
+            Json out;
+            if (allowIndex && req["params"]["name"].str("") == "index_midi_folder") {
+                std::string e;
+                int n = indexMidiFolder(req["params"]["arguments"]["path"].str(""), lib, nullptr, 5000, e);
+                out = Json::object();
+                if (!e.empty() && n == 0) { out.set("ok", false); out.set("error", e); }
+                else { out.set("ok", true); out.set("indexed_files", n); out.set("total_references", (int) lib.references.size()); }
+            } else {
+                out = callTool(req["params"]["name"].str(""), req["params"]["arguments"], lib);
+            }
             Json content = Json::array();
             Json part = Json::object(); part.set("type", "text"); part.set("text", out.dump(true));
             content.push(part);
@@ -81,13 +116,33 @@ static int serveMcp(const PatternLibrary& lib) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "usage: hhmg-cli tools | call <tool> | mcp  [--patterns patterns.json]\n";
+        std::cerr << "usage: hhmg-cli tools | call <tool> | mcp [--allow-index] | index <dir> | voice <wav>   [--patterns f.json]\n";
         return 2;
     }
     std::string cmd = argv[1];
     PatternLibrary lib = loadLibrary(argc, argv);
     if (cmd == "tools") { std::cout << toolSchemas().dump(true) << "\n"; return 0; }
-    if (cmd == "mcp") return serveMcp(lib);
+    if (cmd == "mcp") return serveMcp(lib, hasFlag(argc, argv, "--allow-index"));
+    if (cmd == "index" && argc >= 3) {
+        PatternLibrary delta; std::string e;
+        int n = indexMidiFolder(argv[2], lib, &delta, 5000, e);
+        std::string outPath = optValue(argc, argv, "--out", "user_library.json");
+        std::ofstream(outPath) << delta.toJson().dump();
+        std::cout << "indexed " << n << " files -> " << outPath << (e.empty() ? "" : "  (" + e + ")") << "\n";
+        return n > 0 ? 0 : 1;
+    }
+    if (cmd == "voice" && argc >= 3) {
+        Json args = Json::object();
+        args.set("path", argv[2]);
+        args.set("mode", optValue(argc, argv, "--mode", "melody"));
+        if (!optValue(argc, argv, "--style").empty()) args.set("style", optValue(argc, argv, "--style"));
+        if (!optValue(argc, argv, "--seed").empty()) args.set("seed", std::atoi(optValue(argc, argv, "--seed").c_str()));
+        if (!optValue(argc, argv, "--bpm").empty()) args.set("bpm", std::atof(optValue(argc, argv, "--bpm").c_str()));
+        args.set("output_path", optValue(argc, argv, "--out", "voice.mid"));
+        Json out = callTool("voice_to_midi", args, lib);
+        std::cout << out.dump(true) << "\n";
+        return out["ok"].boolean(false) ? 0 : 1;
+    }
     if (cmd == "call" && argc >= 3) {
         std::stringstream ss; ss << std::cin.rdbuf();
         Json args;

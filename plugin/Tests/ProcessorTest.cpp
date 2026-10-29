@@ -1,6 +1,7 @@
 // Headless check of the plugin processor: transport-locked MIDI playback, scale lock, state round trip,
 // MIDI export/import and (optionally) an editor snapshot.   Usage: HipHopProcessorTest [snapshot.png]
 #include "../Source/PluginEditor.h"
+#include <cmath>
 #include <cstdio>
 
 using namespace juce;
@@ -117,6 +118,53 @@ int main (int argc, char** argv)
         other.matchImportedStyle();
         check (other.getClip() != nullptr && hhmg::countOutOfScale (other.getClip()->result) == 0, "match style generates in scale");
         check (! other.refProgression.empty(), "match style carries the progression");
+    }
+
+    // --- voice / audio import and the user's MIDI dataset (async: spin the message loop until the callbacks fire)
+    {
+        auto pump = [] (const std::function<bool()>& until, int maxMs)
+        {
+            for (int waited = 0; waited < maxMs && ! until(); waited += 20) MessageManager::getInstance()->runDispatchLoopUntil (20);
+        };
+        // a sung phrase as a WAV file
+        std::vector<float> audio ((size_t) 4800, 0.0f);
+        const int phrase[] = { 57, 60, 64, 62, 60, 57, 55, 57 };
+        for (int p : phrase)
+        {
+            double f0 = 440.0 * std::pow (2.0, (p - 69) / 12.0), ph = 0;
+            for (int i = 0; i < 7360; ++i) { ph += 6.283185307 * f0 / 16000.0; double t = i / 16000.0; double env = std::min (1.0, t / 0.03) * std::min (1.0, (0.46 - t) / 0.03); audio.push_back ((float) (0.3 * env * (std::sin (ph) + 0.5 * std::sin (2 * ph)))); }
+            audio.resize (audio.size() + 640, 0.0f);
+        }
+        auto wavBytes = hhmg::writeWav16 (audio, 16000);
+        auto wav = File::getSpecialLocation (File::tempDirectory).getChildFile ("hhmg_voice_test.wav");
+        wav.replaceWithData (wavBytes.data(), wavBytes.size());
+        bool done = false; String msg;
+        HipHopMidiProcessor voiceProc;
+        voiceProc.importAudioAsync (wav, [&] (String m) { msg = m; done = true; });
+        pump ([&] { return done; }, 15000);
+        check (done && voiceProc.hasVoice(), "audio import produced a transcription: " + msg);
+        check (voiceProc.getClip() != nullptr && hhmg::countOutOfScale (voiceProc.getClip()->result) == 0, "voice clip is in scale");
+        for (int mode = 0; mode < 3; ++mode)
+        {
+            if (auto* p = voiceProc.apvts.getParameter ("voiceMode")) p->setValueNotifyingHost (p->convertTo0to1 ((float) mode));
+            auto m2 = voiceProc.makeFromVoice (true);
+            check (voiceProc.getClip() != nullptr && ! voiceProc.getClip()->result.notes.empty() && hhmg::countOutOfScale (voiceProc.getClip()->result) == 0, "voice mode " + String (mode) + " " + m2);
+        }
+        check (voiceProc.analyzeClipJson()["ok"].boolean(), "analyze_current_clip after voice");
+        auto sim = voiceProc.similarForAi (hhmg::Json::object());
+        check (sim["ok"].boolean (false), "similar_to_current_clip tool");
+        // the user's own MIDI folder
+        auto dir = File::getSpecialLocation (File::tempDirectory).getChildFile ("hhmg_midi_dir_test");
+        dir.deleteRecursively(); dir.createDirectory();
+        hhmg::Request rq; rq.root = 7; rq.scale = hhmg::findScale ("minor"); rq.progression = { 1, 6, 3, 7 }; rq.bars = 8; rq.melody = false;
+        hhmg::writeMidiFile (hhmg::generate (rq, hhmg::PatternLibrary::builtin()), dir.getChildFile ("Loop - G Min.mid").getFullPathName().toStdString());
+        auto before = voiceProc.libraryInfo();
+        bool done2 = false; String msg2;
+        voiceProc.addMidiFolderAsync (dir, [&] (String m) { msg2 = m; done2 = true; });
+        pump ([&] { return done2; }, 15000);
+        check (done2 && voiceProc.libraryInfo() != before, "folder indexed: " + msg2);
+        voiceProc.userLibraryFileForTest().deleteFile();
+        wav.deleteFile(); dir.deleteRecursively();
     }
 
     // --- factory presets

@@ -1,5 +1,7 @@
 #include "hhmg/Analyze.h"
 #include "hhmg/Guide.h"
+#include "hhmg/AudioRead.h"
+#include "hhmg/Library.h"
 #include "hhmg/Studio.h"
 #include "hhmg/Tools.h"
 #include <cmath>
@@ -186,6 +188,44 @@ int main() {
                   if (!ok) { CHECK(false, "studio %s style '%s' out-of-scale pitch %d", mode, style, n.pitch); break; }
               }
           }
+      // WAV file round trip + voice_to_midi / analyze_audio tools
+      { std::vector<uint8_t> wav = writeWav16(audio, sr);
+        std::vector<float> back; int sr2 = 0; std::string e;
+        CHECK(readWav(wav, back, sr2, e) && sr2 == sr && back.size() == audio.size(), "wav round trip %s", e.c_str());
+        { std::FILE* f = std::fopen(tmpFile("hhmg_voice.wav").c_str(), "wb"); std::fwrite(wav.data(), 1, wav.size(), f); std::fclose(f); }
+        Json aa = Json::object(); aa.set("path", tmpFile("hhmg_voice.wav"));
+        Json ar = callTool("analyze_audio", aa, lib);
+        CHECK(ar["ok"].boolean() && ar["transcribed_notes"].integer() == 8, "analyze_audio %s", ar.dump().c_str());
+        for (const char* mode : {"melody", "melody_plus", "similar"}) {
+            Json vm = Json::object(); vm.set("path", tmpFile("hhmg_voice.wav")); vm.set("mode", mode); vm.set("seed", 2);
+            vm.set("output_path", tmpFile("hhmg_voice.mid"));
+            Json vr = callTool("voice_to_midi", vm, lib);
+            CHECK(vr["ok"].boolean() && vr["midi_file"].isString() && vr["note_count"].integer() > 0, "voice_to_midi %s: %s", mode, vr.dump().c_str());
+        }
+        Json bad = Json::object(); bad.set("path", "/etc/passwd");
+        CHECK(!callTool("voice_to_midi", bad, lib)["ok"].boolean(true), "voice_to_midi refuses non-wav"); }
+
+      // user dataset: key from file name, indexing, and "similar" drawing on a reference
+      { int kr = -1; bool km = false;
+        CHECK(keyFromName("Cymatics - Essential MIDI 34 - G Min.mid", kr, km) && kr == 7 && km, "keyFromName G Min");
+        CHECK(keyFromName("loop - F# Maj.mid", kr, km) && kr == 6 && !km, "keyFromName F# Maj");
+        CHECK(keyFromName("Bb Minor idea", kr, km) && kr == 10 && km, "keyFromName Bb Minor");
+        CHECK(!keyFromName("drum loop 120.mid", kr, km), "keyFromName none");
+        PatternLibrary mine = PatternLibrary::builtin(), delta;
+        Request rq; rq.root = 7; rq.scale = findScale("minor"); rq.progression = {1, 6, 3, 7}; rq.bars = 8; rq.seed = 4; rq.melody = false;
+        std::string e;
+        CHECK(indexMidiBytes(writeMidi(generate(rq, mine)), "my pack", "Test loop - G Min.mid", mine, &delta, e), "indexMidiBytes %s", e.c_str());
+        CHECK(delta.references.size() == 1 && delta.references[0].mode == "minor" && delta.references[0].root == 7, "reference profile");
+        CHECK(delta.references[0].degrees.size() >= 4 && delta.references[0].degrees[0] == 1, "reference degrees");
+        CHECK(Json::parse(delta.toJson().dump())["references"].size() == 1, "references persist in JSON");
+        Json opt = Json::object(); opt.set("seed", 1);
+        Json sim = studioProcess("similar", tr.notes, tr.bpm, true, opt, mine);
+        CHECK(sim["ok"].boolean() && sim["inspired_by"]["name"].str("") == "Test loop - G Min", "similar draws on the dataset: %s", sim["inspired_by"].dump().c_str());
+        opt.set("use_dataset", false);
+        CHECK(!studioProcess("similar", tr.notes, tr.bpm, true, opt, mine).has("inspired_by"), "use_dataset=false");
+        Json clipSim = similarToClip(sim["clip"], Json::object(), mine);
+        CHECK(clipSim["ok"].boolean(), "similarToClip"); }
+
       Transcription bad = transcribeAudio(std::vector<float>((size_t) sr, 0.0f), sr, to);
       CHECK(!bad.error.empty(), "silence is rejected"); }
 

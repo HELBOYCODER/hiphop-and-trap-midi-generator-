@@ -82,7 +82,7 @@ void DragHandle::mouseDrag (const MouseEvent& e)
 HipHopMidiEditor::HipHopMidiEditor (HipHopMidiProcessor& p)
     : AudioProcessorEditor (&p), proc (p), roll (p), drag (p)
 {
-    setSize (940, 700);
+    setSize (940, 744);
     setResizable (false, false);
 
     auto label = [this] (Label& l, const String& t, Justification j = Justification::centredLeft)
@@ -176,6 +176,61 @@ HipHopMidiEditor::HipHopMidiEditor (HipHopMidiProcessor& p)
     matchButton.setTooltip ("Apply the key, tempo, style mix, swing, chord progression and rhythm detected in the MIDI you dropped, then generate in that style");
     matchButton.onClick = [this] { proc.matchImportedStyle(); setStatus ("Generating in the detected style (progression + rhythm taken from your file).", false); };
     addAndMakeVisible (matchButton);
+
+    // ---- voice / audio -> MIDI and the user's own dataset
+    for (auto* m : { "My melody", "Melody + chords/808", "Similar idea" }) voiceModeBox.addItem (m, voiceModeBox.getNumItems() + 1);
+    voiceModeAtt = std::make_unique<AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, "voiceMode", voiceModeBox);
+    addAndMakeVisible (voiceModeBox);
+    importAudioButton.setTooltip ("Pick a recording of your voice or humming (WAV, AIFF, FLAC, OGG, MP3). It is turned into notes and made into MIDI.");
+    importAudioButton.onClick = [this]
+    {
+        chooser = std::make_unique<FileChooser> ("Choose a voice recording", File(), "*.wav;*.aif;*.aiff;*.flac;*.ogg;*.mp3;*.m4a");
+        Component::SafePointer<HipHopMidiEditor> safe (this);
+        chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this, safe] (const FileChooser& fc)
+        {
+            auto f = fc.getResult();
+            if (! f.existsAsFile() || safe == nullptr) return;
+            setStatus ("Listening to " + f.getFileName() + "...");
+            proc.importAudioAsync (f, [safe] (String m) { if (safe != nullptr) { safe->setStatus (m); safe->makeVoiceButton.setEnabled (safe->proc.hasVoice()); } });
+        });
+    };
+    addAndMakeVisible (importAudioButton);
+    recordButton.setTooltip ("Records what the DAW sends to this plugin's audio input (route a vocal track here). Press again to stop.");
+    recordButton.onClick = [this]
+    {
+        Component::SafePointer<HipHopMidiEditor> safe (this);
+        if (! proc.isRecordingInput())
+        {
+            proc.startInputRecording();
+            recordButton.setButtonText ("Stop & use");
+            setStatus ("Recording the plugin input... sing or play the vocal track.");
+        }
+        else
+        {
+            recordButton.setButtonText ("Record input");
+            setStatus ("Listening...");
+            proc.stopInputRecording ([safe] (String m) { if (safe != nullptr) { safe->setStatus (m); safe->makeVoiceButton.setEnabled (safe->proc.hasVoice()); } });
+        }
+    };
+    addAndMakeVisible (recordButton);
+    makeVoiceButton.setEnabled (proc.hasVoice());
+    makeVoiceButton.setTooltip ("Another idea from the same voice (uses the mode on the left).");
+    makeVoiceButton.onClick = [this] { setStatus (proc.makeFromVoice (true)); };
+    addAndMakeVisible (makeVoiceButton);
+    addFolderButton.setTooltip ("Pick a folder of your own MIDI files. Only profiles (key, chord degrees, rhythm) are stored, never the notes. The AI and Similar mode then draw on them.");
+    addFolderButton.onClick = [this]
+    {
+        chooser = std::make_unique<FileChooser> ("Choose a folder of MIDI files", File());
+        Component::SafePointer<HipHopMidiEditor> safe (this);
+        chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories, [this, safe] (const FileChooser& fc)
+        {
+            auto d = fc.getResult();
+            if (! d.isDirectory() || safe == nullptr) return;
+            setStatus ("Indexing " + d.getFileName() + "...");
+            proc.addMidiFolderAsync (d, [safe] (String m) { if (safe != nullptr) { safe->setStatus (m); safe->infoLabel.setText ("Library: " + safe->proc.libraryInfo(), dontSendNotification); } });
+        });
+    };
+    addAndMakeVisible (addFolderButton);
     addAndMakeVisible (roll); addAndMakeVisible (drag);
 
     // AI panel
@@ -285,14 +340,28 @@ void HipHopMidiEditor::changeListenerCallback (ChangeBroadcaster*)
 
 void HipHopMidiEditor::timerCallback() { bpm.setEnabled (! proc.apvts.getRawParameterValue ("syncBpm")->load()); }
 
+bool HipHopMidiEditor::isAudioFile (const String& f)
+{
+    for (auto* e : { ".wav", ".aif", ".aiff", ".flac", ".ogg", ".mp3", ".m4a" }) if (f.endsWithIgnoreCase (e)) return true;
+    return false;
+}
+
 bool HipHopMidiEditor::isInterestedInFileDrag (const StringArray& files)
 {
-    for (auto& f : files) if (f.endsWithIgnoreCase (".mid") || f.endsWithIgnoreCase (".midi")) return true;
+    for (auto& f : files) if (f.endsWithIgnoreCase (".mid") || f.endsWithIgnoreCase (".midi") || isAudioFile (f)) return true;
     return false;
 }
 
 void HipHopMidiEditor::filesDropped (const StringArray& files, int, int)
 {
+    for (auto& f : files)
+        if (isAudioFile (f))
+        {
+            Component::SafePointer<HipHopMidiEditor> safe (this);
+            setStatus ("Listening to " + File (f).getFileName() + "...");
+            proc.importAudioAsync (File (f), [safe] (String m) { if (safe != nullptr) { safe->setStatus (m); safe->makeVoiceButton.setEnabled (safe->proc.hasVoice()); } });
+            return;
+        }
     for (auto& f : files)
         if (f.endsWithIgnoreCase (".mid") || f.endsWithIgnoreCase (".midi"))
         {
@@ -315,7 +384,7 @@ void HipHopMidiEditor::paint (Graphics& g)
     g.setFont (FontOptions (12.0f));
     g.drawText ("R&B  /  Trap  /  Hip-Hop   -   every note stays in key", 20, 40, 380, 16, Justification::centredLeft);
     g.setColour (panel);
-    g.fillRoundedRectangle (Rectangle<float> (14, 448, 912, 238), 8.0f);
+    g.fillRoundedRectangle (Rectangle<float> (14, 492, 912, 238), 8.0f);
 }
 
 void HipHopMidiEditor::resized()
@@ -363,10 +432,22 @@ void HipHopMidiEditor::resized()
     infoLabel.setBounds (actions.reduced (8, 0));
 
     area.removeFromTop (6);
+    auto voiceRow = area.removeFromTop (34);
+    voiceModeBox.setBounds (voiceRow.removeFromLeft (190));
+    voiceRow.removeFromLeft (8);
+    importAudioButton.setBounds (voiceRow.removeFromLeft (130));
+    voiceRow.removeFromLeft (8);
+    recordButton.setBounds (voiceRow.removeFromLeft (120));
+    voiceRow.removeFromLeft (8);
+    makeVoiceButton.setBounds (voiceRow.removeFromLeft (130));
+    voiceRow.removeFromLeft (8);
+    addFolderButton.setBounds (voiceRow.removeFromLeft (170));
+
+    area.removeFromTop (6);
     roll.setBounds (area.removeFromTop (96));
 
     // AI panel (drawn on panel at y=448)
-    auto ai = Rectangle<int> (14, 448, 912, 238).reduced (12, 10);
+    auto ai = Rectangle<int> (14, 492, 912, 238).reduced (12, 10);
     auto head = ai.removeFromTop (44);
     providerBox.setBounds (head.removeFromLeft (300).withTrimmedTop (16));
     head.removeFromLeft (10);

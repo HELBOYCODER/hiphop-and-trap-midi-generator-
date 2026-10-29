@@ -63,7 +63,11 @@ private:
 
     juce::ComboBox presetBox, rootBox, scaleBox, providerBox;
     juce::TextButton savePreset { "Save" }, deletePreset { "Delete" }, generateButton { "GENERATE" }, dice { "New seed" },
-        loadDataset { "Load dataset..." }, askButton { "Ask AI" }, matchButton { "Match dropped style" };
+        loadDataset { "Load dataset..." }, askButton { "Ask AI" }, matchButton { "Match dropped style" },
+        importAudioButton { "Import audio..." }, recordButton { "Record input" }, makeVoiceButton { "Make from voice" }, addFolderButton { "Add my MIDI folder..." };
+    juce::ComboBox voiceModeBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> voiceModeAtt;
+    static bool isAudioFile (const juce::String& f);
     juce::Slider bars { juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft },
                  bpm { juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft },
                  seed { juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft },

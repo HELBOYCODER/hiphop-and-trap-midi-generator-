@@ -133,6 +133,17 @@ Json PatternLibrary::toJson() const {
         x.set("degrees", s); pp.push(x);
     }
     o.set("progressions", pp);
+    Json refs = Json::array();
+    for (const auto& r : references) {
+        Json x = Json::object();
+        x.set("id", r.id); x.set("pack", r.pack); x.set("name", r.name); x.set("style", r.style); x.set("mode", r.mode);
+        x.set("root", r.root); x.set("bars", r.bars); x.set("bpm", r.bpm); x.set("density", r.density); x.set("swing", r.swing);
+        Json d = Json::array(); for (int v : r.degrees) d.push(v); x.set("degrees", d);
+        Json rh = Json::array(); for (const auto& n : r.rhythm) { Json t = Json::array(); t.push(n.step); t.push(n.len); t.push(n.vel); rh.push(t); }
+        x.set("rhythm", rh);
+        refs.push(x);
+    }
+    o.set("references", refs);
     return o;
 }
 

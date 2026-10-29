@@ -27,8 +27,14 @@ struct Outcome
 };
 
 // Blocking: call from a worker thread. `shouldCancel` is polled between network calls.
-// `analyzeClip` lets the model inspect the clip loaded in the plugin (analyze_current_clip tool).
+// Tools that need the clip loaded in the plugin.
+struct ClipTools
+{
+    std::function<hhmg::Json()> analyze;                         // analyze_current_clip
+    std::function<hhmg::Json (const hhmg::Json&)> similar;       // similar_to_current_clip (applies the result itself)
+};
+
 Outcome run (const Settings& settings, const juce::String& prompt, const juce::String& currentSettingsJson,
              const hhmg::PatternLibrary& library, const std::function<bool()>& shouldCancel,
-             const std::function<hhmg::Json()>& analyzeClip);
+             const ClipTools& clipTools);
 }
