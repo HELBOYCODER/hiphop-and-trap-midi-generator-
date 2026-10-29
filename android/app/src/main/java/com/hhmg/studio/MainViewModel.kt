@@ -25,6 +25,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val recorder = Recorder { level = it }
     private var track: AudioTrack? = null
     private var lastSamples: FloatArray? = null
+    private var lastRate = 16000
 
     var recording by mutableStateOf(false); private set
     var recordSeconds by mutableStateOf(0.0); private set
@@ -46,8 +47,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var playing by mutableStateOf(false); private set
     var playTicks by mutableStateOf(0.0); private set
 
+    var provider by mutableStateOf(prefs.getString("provider", "gemini") ?: "gemini")      // "gemini" | "openai"
     var apiKey by mutableStateOf(prefs.getString("apiKey", "") ?: "")
     var model by mutableStateOf(prefs.getString("model", "gemini-2.5-flash") ?: "gemini-2.5-flash")
+    var endpoint by mutableStateOf(prefs.getString("endpoint", "https://api.openai.com/v1") ?: "https://api.openai.com/v1")
     var aiBusy by mutableStateOf(false); private set
     var aiMessage by mutableStateOf(""); private set
     var libraryInfo by mutableStateOf(""); private set
@@ -58,11 +61,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             for (f in listOf("patterns.pop909.json", "patterns.cymatics.json")) {
                 try { Native.loadPatterns(am.open(f).bufferedReader().use { it.readText() }) } catch (_: Exception) {}
             }
+            try { java.io.File(getApplication<Application>().filesDir, "user_library.json").takeIf { it.exists() }?.readText()?.let { Native.loadUserLibrary(it) } } catch (_: Exception) {}
             libraryInfo = Native.libraryInfo()
         }
     }
 
-    fun saveAiSettings() { prefs.edit().putString("apiKey", apiKey).putString("model", model).apply() }
+    fun saveAiSettings() { prefs.edit().putString("provider", provider).putString("apiKey", apiKey).putString("model", model).putString("endpoint", endpoint).apply() }
 
     // ---- recording -----------------------------------------------------------------------------
     fun startRecording(): Boolean {
@@ -77,17 +81,57 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!recording) return
         recording = false; level = 0f
         val samples = recorder.stop()
-        lastSamples = samples
+        lastSamples = samples; lastRate = recorder.sampleRate
         busy = true; status = "در حال تشخیص نت‌ها..."
         viewModelScope.launch(Dispatchers.Default) {
             val bpm = bpmText.toDoubleOrNull() ?: 0.0
-            val (tr, err) = parseTranscription(Native.transcribe(samples, recorder.sampleRate, bpm))
+            val (tr, err) = parseTranscription(Native.transcribe(samples, lastRate, bpm))
             withContext(Dispatchers.Main) {
                 busy = false
                 if (tr == null) { status = err ?: "خطا در تشخیص"; return@withContext }
                 transcription = tr
                 process()
             }
+        }
+    }
+
+    // ---- import an audio file instead of recording -------------------------------------------------------------------
+    fun importAudio(uri: android.net.Uri) {
+        stopPlayback()
+        busy = true; status = "در حال خواندن فایل صوتی..."
+        viewModelScope.launch(Dispatchers.Default) {
+            try {
+                val d = AudioDecoder.decode(getApplication(), uri)
+                lastSamples = d.samples; lastRate = d.sampleRate
+                val bpm = bpmText.toDoubleOrNull() ?: 0.0
+                val (tr, err) = parseTranscription(Native.transcribe(d.samples, d.sampleRate, bpm))
+                withContext(Dispatchers.Main) {
+                    busy = false
+                    if (tr == null) { status = err ?: "خطا در تشخیص"; return@withContext }
+                    transcription = tr
+                    process()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { busy = false; status = "این فایل خوانده نشد: ${e.message}" }
+            }
+        }
+    }
+
+    // ---- the user's own MIDI files become reference profiles (no notes are kept) --------------------------------------------
+    fun addMidiFiles(uris: List<android.net.Uri>) {
+        busy = true; status = "در حال ایندکس MIDIها..."
+        viewModelScope.launch(Dispatchers.IO) {
+            var added = 0
+            val app = getApplication<Application>()
+            for (u in uris) {
+                try {
+                    val name = u.lastPathSegment?.substringAfterLast('/') ?: "midi"
+                    val bytes = app.contentResolver.openInputStream(u)?.use { it.readBytes() } ?: continue
+                    if (JSONObject(Native.indexMidi(name, "my library", bytes)).optBoolean("ok")) added++
+                } catch (_: Exception) {}
+            }
+            try { java.io.File(app.filesDir, "user_library.json").writeText(Native.userLibraryJson()) } catch (_: Exception) {}
+            withContext(Dispatchers.Main) { busy = false; libraryInfo = Native.libraryInfo(); status = "$added فایل MIDI به کتابخانه اضافه شد. حالت «مشابه» و AI از آن‌ها استفاده می‌کنند." }
         }
     }
 
@@ -118,6 +162,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         sb.append("سبک تشخیص‌داده‌شده: ").append(a.optString("detected_style"))
         a.optJSONObject("style_scores")?.let { sb.append("  (R&B ${pct(it, "rnb")}، Trap ${pct(it, "trap")}، Hip-Hop ${pct(it, "hiphop")})") }
         a.optJSONArray("reasons")?.let { for (i in 0 until minOf(3, it.length())) sb.append("\n• ").append(it.getString(i)) }
+        r.optJSONObject("inspired_by")?.let { sb.append("\nالهام‌گرفته از مرجع: ").append(it.optString("name")).append(" (").append(it.optString("pack")).append(")") }
         r.optJSONArray("chords")?.let { sb.append("\nآکوردها: ").append((0 until it.length()).joinToString(" | ") { i -> it.getString(i) }) }
         return sb.toString()
     }
@@ -129,7 +174,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         busy = true; status = "در حال تحلیل مجدد..."
         viewModelScope.launch(Dispatchers.Default) {
             val bpm = bpmText.toDoubleOrNull() ?: 0.0
-            val (tr, err) = parseTranscription(Native.transcribe(samples, recorder.sampleRate, bpm))
+            val (tr, err) = parseTranscription(Native.transcribe(samples, lastRate, bpm))
             withContext(Dispatchers.Main) {
                 busy = false
                 if (tr == null) { status = err ?: "خطا در تشخیص"; return@withContext }
@@ -180,7 +225,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val ctx = JSONObject().put("analysis", analysis ?: JSONObject()).put("mode", mode.key).put("style", style).toString()
         val current = clip?.json
         viewModelScope.launch(Dispatchers.IO) {
-            val out = GeminiClient().run(apiKey, model, prompt, ctx) { current }
+            val out = Ai.run(AiConfig(provider, apiKey, model, endpoint), prompt, ctx) { current }
             withContext(Dispatchers.Main) {
                 aiBusy = false
                 aiMessage = out.message

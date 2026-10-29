@@ -6,6 +6,10 @@ object Native {
 
     external fun loadPatterns(json: String): Boolean
     external fun libraryInfo(): String
+    external fun indexMidi(name: String, pack: String, bytes: ByteArray): String
+    external fun userLibraryJson(): String
+    external fun loadUserLibrary(json: String): Boolean
+    external fun similarToClip(clipJson: String, optionsJson: String): String
     external fun transcribe(samples: FloatArray, sampleRate: Int, bpm: Double): String
     external fun process(mode: String, notesJson: String, bpm: Double, bpmKnown: Boolean, optionsJson: String): String
     external fun callTool(name: String, argsJson: String): String

@@ -76,6 +76,8 @@ private fun Screen(vm: MainViewModel) {
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) vm.startRecording() else Toast.makeText(ctx, "برای ضبط، دسترسی میکروفون لازم است", Toast.LENGTH_LONG).show()
     }
+    val pickAudio = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) vm.importAudio(uri) }
+    val pickMidi = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> if (uris.isNotEmpty()) vm.addMidiFiles(uris) }
     fun toggleRecord() {
         if (vm.recording) vm.stopRecording()
         else if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) vm.startRecording()
@@ -98,6 +100,10 @@ private fun Screen(vm: MainViewModel) {
                 if (vm.recording) {
                     LinearProgressIndicator(progress = { vm.level.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth(), color = Teal)
                     Text("%.1f ثانیه".format(vm.recordSeconds), color = Color(0xFF9A9CA4), fontSize = 12.sp)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = { pickAudio.launch(arrayOf("audio/*")) }, enabled = !vm.busy && !vm.recording, modifier = Modifier.weight(1f)) { Text("ایمپورت فایل صوتی") }
+                    OutlinedButton(onClick = { pickMidi.launch(arrayOf("audio/midi", "audio/x-midi", "audio/mid", "application/octet-stream", "*/*")) }, enabled = !vm.busy, modifier = Modifier.weight(1f)) { Text("MIDIهای من") }
                 }
                 Text(vm.status, color = Color(0xFFE9E6DF), fontSize = 14.sp)
             }
@@ -163,8 +169,14 @@ private fun Screen(vm: MainViewModel) {
         // ---- AI
         Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(12.dp)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("هوش مصنوعی (Gemini، نیاز به اینترنت)", color = Amber, fontWeight = FontWeight.SemiBold)
-                OutlinedTextField(value = vm.apiKey, onValueChange = { vm.apiKey = it }, singleLine = true, label = { Text("Gemini API key") },
+                Text("هوش مصنوعی (نیاز به اینترنت)", color = Amber, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = vm.provider == "gemini", onClick = { vm.provider = "gemini"; if (vm.model.isBlank() || !vm.model.startsWith("gemini")) vm.model = "gemini-2.5-flash" }, label = { Text("Gemini") })
+                    FilterChip(selected = vm.provider == "openai", onClick = { vm.provider = "openai"; if (vm.model.startsWith("gemini")) vm.model = "gpt-4o-mini" }, label = { Text("OpenAI-compatible") })
+                }
+                if (vm.provider == "openai") OutlinedTextField(value = vm.endpoint, onValueChange = { vm.endpoint = it }, singleLine = true,
+                    label = { Text("Endpoint (…/v1) — OpenAI, OpenRouter, Ollama, LM Studio") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = vm.apiKey, onValueChange = { vm.apiKey = it }, singleLine = true, label = { Text(if (vm.provider == "gemini") "Gemini API key" else "API key (برای مدل محلی خالی بماند)") },
                     visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = vm.model, onValueChange = { vm.model = it }, singleLine = true, label = { Text("مدل") }, modifier = Modifier.fillMaxWidth())
                 var prompt by remember { mutableStateOf("") }

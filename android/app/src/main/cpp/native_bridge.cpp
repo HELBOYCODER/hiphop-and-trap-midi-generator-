@@ -3,6 +3,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include "hhmg/Library.h"
 #include "hhmg/Studio.h"
 #include "hhmg/Tools.h"
 
@@ -11,6 +12,7 @@ using namespace hhmg;
 namespace {
 std::mutex gMutex;
 std::shared_ptr<PatternLibrary> gLib = std::make_shared<PatternLibrary>(PatternLibrary::builtin());
+PatternLibrary gUser;   // only what the user added (profiles of their own MIDI files); saved by the app
 
 std::string str(JNIEnv* env, jstring s) {
     if (!s) return {};
@@ -46,6 +48,47 @@ JNIEXPORT jboolean JNICALL Java_com_hhmg_studio_Native_loadPatterns(JNIEnv* env,
         gLib = next;
         return JNI_TRUE;
     } catch (...) { return JNI_FALSE; }
+}
+
+// profiles of the user's own MIDI files (no notes are kept)
+JNIEXPORT jstring JNICALL Java_com_hhmg_studio_Native_indexMidi(JNIEnv* env, jobject, jstring name, jstring pack, jbyteArray bytes) {
+    try {
+        jsize n = env->GetArrayLength(bytes);
+        std::vector<uint8_t> b((size_t) n);
+        env->GetByteArrayRegion(bytes, 0, n, reinterpret_cast<jbyte*>(b.data()));
+        auto next = std::make_shared<PatternLibrary>(*lib());
+        std::string err;
+        std::lock_guard<std::mutex> l(gMutex);
+        bool ok = indexMidiBytes(b, str(env, pack), str(env, name), *next, &gUser, err);
+        if (ok) gLib = next;
+        Json out = Json::object();
+        out.set("ok", ok);
+        if (!ok) out.set("error", err);
+        out.set("total_references", (int) gLib->references.size());
+        return jstr(env, out.dump());
+    } catch (const std::exception& e) { return jstr(env, errJson(e.what())); }
+}
+
+JNIEXPORT jstring JNICALL Java_com_hhmg_studio_Native_userLibraryJson(JNIEnv* env, jobject) {
+    std::lock_guard<std::mutex> l(gMutex);
+    return jstr(env, gUser.toJson().dump());
+}
+
+JNIEXPORT jboolean JNICALL Java_com_hhmg_studio_Native_loadUserLibrary(JNIEnv* env, jobject, jstring json) {
+    try {
+        Json j = Json::parse(str(env, json));
+        auto next = std::make_shared<PatternLibrary>(*lib());
+        next->mergeJson(j);
+        std::lock_guard<std::mutex> l(gMutex);
+        gUser.mergeJson(j);
+        gLib = next;
+        return JNI_TRUE;
+    } catch (...) { return JNI_FALSE; }
+}
+
+JNIEXPORT jstring JNICALL Java_com_hhmg_studio_Native_similarToClip(JNIEnv* env, jobject, jstring clipJson, jstring optionsJson) {
+    try { return jstr(env, similarToClip(Json::parse(str(env, clipJson)), Json::parse(str(env, optionsJson)), *lib()).dump()); }
+    catch (const std::exception& e) { return jstr(env, errJson(e.what())); }
 }
 
 JNIEXPORT jstring JNICALL Java_com_hhmg_studio_Native_libraryInfo(JNIEnv* env, jobject) {
