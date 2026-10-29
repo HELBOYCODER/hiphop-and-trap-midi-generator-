@@ -19,6 +19,7 @@ target_sources(HipHopMidiGenerator PRIVATE
   Source/PluginProcessor.cpp
   Source/PluginEditor.cpp
   Source/AiBridge.cpp
+  Source/McpHub.cpp
   Source/PresetManager.cpp)
 
 target_compile_definitions(HipHopMidiGenerator PUBLIC
@@ -44,7 +45,7 @@ target_link_libraries(HipHopMidiGenerator
 if(HHMG_BUILD_TESTS)
   juce_add_console_app(HipHopProcessorTest PRODUCT_NAME "HipHopProcessorTest" NEEDS_CURL TRUE)
   target_sources(HipHopProcessorTest PRIVATE
-    Tests/ProcessorTest.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/AiBridge.cpp Source/PresetManager.cpp)
+    Tests/ProcessorTest.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/AiBridge.cpp Source/McpHub.cpp Source/PresetManager.cpp)
   target_compile_definitions(HipHopProcessorTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_STANDALONE_APPLICATION=1 JUCE_MODAL_LOOPS_PERMITTED=1 JUCE_USE_MP3AUDIOFORMAT=1)
   target_link_libraries(HipHopProcessorTest PRIVATE hhmg_core HHMGData
     juce::juce_audio_utils juce::juce_audio_processors juce::juce_gui_extra juce::juce_recommended_config_flags)

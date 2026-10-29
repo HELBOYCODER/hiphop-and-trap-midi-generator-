@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include "hhmg/Tools.h"
 
 namespace hhmg {
 
@@ -154,6 +155,139 @@ Json studioProcess(const std::string& mode, const std::vector<Note>& melodyIn, d
     out.set("root", a.root); out.set("scale_index", a.scale);
     out.set("clip", clipToJson(notes, rq.bpm, rq.bars, desc));
     out.set("analysis", analysisToJson(a));
+    return out;
+}
+
+int countSyllables(const std::string& word) {
+    // Latin: vowel groups with a silent trailing 'e'; other scripts (Persian/Arabic): vowel letters + long vowels
+    std::string w; bool latin = true; int nonAscii = 0;
+    for (unsigned char c : word) { if (c >= 0x80) { latin = false; ++nonAscii; } else if (std::isalpha(c)) w += (char) std::tolower(c); }
+    if (latin) {
+        if (w.empty()) return 0;
+        int n = 0; bool prev = false;
+        for (char c : w) { bool v = std::string("aeiouy").find(c) != std::string::npos; if (v && !prev) ++n; prev = v; }
+        if (w.size() > 2 && w.back() == 'e' && w[w.size() - 2] != 'l' && n > 1) --n;           // "make" -> 1, "table" keeps 2
+        if (w.size() > 2 && w.compare(w.size() - 2, 2, "ed") == 0 && n > 1 && w[w.size() - 3] != 't' && w[w.size() - 3] != 'd') --n;
+        return std::max(1, n);
+    }
+    // Arabic script (Persian): long-vowel letters (ا آ و ی ى) and a final ه are vowels; two consonants in a row imply a short
+    // vowel between them, so "سلام" = sa-lām = 2, "شب" = 1, "دلم" = 2. Approximate, good enough for placing notes.
+    std::vector<int> cps;                                           // two-byte code units as (lead << 8 | trail)
+    for (size_t i = 0; i + 1 < word.size(); ++i) {
+        unsigned char a = (unsigned char) word[i], b = (unsigned char) word[i + 1];
+        if (a == 0xD8 || a == 0xD9 || a == 0xDB) { cps.push_back((a << 8) | b); ++i; } else if (a >= 0x80) ++i;
+    }
+    if (cps.empty()) return 1;
+    auto isVowel = [&](size_t k) {
+        int c = cps[k];
+        if (c == 0xD8A7 || c == 0xD8A2 || c == 0xD988 || c == 0xDB8C || c == 0xD989) return true;
+        return k + 1 == cps.size() && (c == 0xD987 || c == 0xDB80);   // final ه
+    };
+    int n = 0; bool prevConsonant = false;
+    for (size_t k = 0; k < cps.size(); ++k) {
+        if (isVowel(k)) { ++n; prevConsonant = false; }
+        else { if (prevConsonant) ++n; prevConsonant = true; }
+    }
+    return std::max(1, n);
+}
+
+Json lyricsToClip(const std::string& lyrics, const Json& options, const PatternLibrary& lib) {
+    Json out = Json::object();
+    struct Word { int syl; };
+    struct Line { std::string text; std::vector<std::pair<int, bool>> syls; }; // (word index, stressed)
+    std::vector<Line> lines;
+    {
+        std::string cur; std::vector<std::string> raw;
+        for (char c : lyrics + "\n") { if (c == '\n' || c == '\r') { if (!cur.empty()) raw.push_back(cur); cur.clear(); } else cur += c; }
+        for (const auto& t : raw) {
+            Line l; l.text = t;
+            std::string word; int wi = 0;
+            auto flush = [&]() { if (word.empty()) return; int n = countSyllables(word); for (int k = 0; k < n; ++k) l.syls.push_back({wi, k == 0}); ++wi; word.clear(); };
+            for (char c : t + " ") { if (c == ' ' || c == '\t' || c == ',' || c == ';' || c == '.' || c == '!' || c == '?' || c == '-') flush(); else word += c; }
+            if (!l.syls.empty()) lines.push_back(l);
+        }
+    }
+    if (lines.empty()) { out.set("ok", false); out.set("error", "no lyrics"); return out; }
+    if (lines.size() > 32) lines.resize(32);
+
+    // bars per line: 1 normally, 2 when there are many syllables
+    std::vector<int> barsOf; int bars = 0;
+    for (const auto& l : lines) { int b = l.syls.size() > 16 ? 2 : 1; barsOf.push_back(b); bars += b; }
+    bars = std::min(bars, 32);
+
+    Request rq = requestFromJson(options);
+    if (!options.has("style")) rq.mix = {0.2, 1.0, 0.4};
+    rq.bars = bars; rq.melody = false; rq.chords = true;
+    if (!options.has("bass")) rq.bass = rq.mix.trap >= rq.mix.rnb;
+    Result r = generate(rq, lib);
+    const Scale& sc = r.scale;
+
+    // chord tones per bar from the generated chords
+    auto chordPcsAt = [&](int bar) {
+        std::vector<int> pcs;
+        for (const auto& n : r.notes)
+            if (n.channel == kChords && n.start >= bar * kTicksPerBar - 5 && n.start < (bar + 1) * kTicksPerBar) pcs.push_back(((n.pitch % 12) + 12) % 12);
+        return pcs;
+    };
+    uint32_t state = rq.seed * 2654435761u + 12345;
+    auto rnd = [&]() { state = state * 1664525u + 1013904223u; return (state >> 8) / 16777216.0; };
+
+    const int tonic = 12 * 6 + sc.root;
+    const int lo = tonic - 5, hi = tonic + 12;
+    auto pitchOf = [&](int d) { return sc.degreeToPitch(tonic, d); };
+    int deg = 0, bar = 0;
+    Json lineInfo = Json::array();
+    for (size_t li = 0; li < lines.size(); ++li) {
+        const Line& l = lines[li];
+        const int nb = barsOf[li];
+        const int n = (int) l.syls.size();
+        const int slots = nb * 16;
+        // spacing: eighths for short lines, sixteenths for dense ones; the last syllable is held to the end of the line
+        int unit = n * 2 <= slots - 4 ? 2 : 1;
+        if (n * 4 <= slots - 6) unit = 4;                       // very short line: quarter notes
+        int startStep = (n * unit < slots - 2) ? (rnd() < 0.5 ? 0 : 2) : 0;   // sometimes a short pickup rest
+        auto pcs = chordPcsAt(std::min(bar, bars - 1));
+        for (int i = 0; i < n; ++i) {
+            const bool stressed = l.syls[(size_t) i].second, last = i == n - 1;
+            const int barHere = bar + (startStep + i * unit) / 16;
+            if (barHere < bars) pcs = chordPcsAt(barHere);
+            int nd = deg;
+            double r2 = rnd();
+            if (stressed || last) {
+                int best = deg, bestDist = 99;
+                for (int d = deg - 3; d <= deg + 3; ++d) {
+                    int p = pitchOf(d); if (p < lo || p > hi) continue;
+                    bool ct = false; for (int pc : pcs) if (((p % 12) + 12) % 12 == pc) ct = true;
+                    bool root = ((p - sc.root) % 12 + 12) % 12 == 0;
+                    if (!(ct || (last && root))) continue;
+                    int dist = std::abs(d - deg) * 2 + (last && !root ? 1 : 0) + (r2 < 0.3 ? (d == deg ? 2 : 0) : 0);
+                    if (dist < bestDist) { bestDist = dist; best = d; }
+                }
+                nd = best;
+            } else {
+                nd = deg + (r2 < 0.35 ? 0 : r2 < 0.7 ? 1 : -1);        // weak syllables: repeat or step
+            }
+            while (pitchOf(nd) > hi) nd -= (int) sc.def().intervals.size();
+            while (pitchOf(nd) < lo) nd += (int) sc.def().intervals.size();
+            deg = nd;
+            Note note; note.pitch = sc.snap(pitchOf(nd)); note.channel = kMelody;
+            note.start = (double) (bar * 16 + startStep + i * unit) * kTicksPerStep;
+            double len = unit * kTicksPerStep * 0.9;
+            if (last) len = ((double) (bar + nb) * kTicksPerBar) - note.start - kTicksPerStep;
+            note.length = std::max(60.0, std::min(len, 2.0 * kTicksPerBar));
+            note.velocity = stressed ? 98 : 80;
+            if (note.start < (double) bars * kTicksPerBar) r.notes.push_back(note);
+        }
+        Json li2 = Json::object(); li2.set("text", l.text); li2.set("syllables", n); li2.set("bars", nb); lineInfo.push(li2);
+        bar += nb;
+    }
+    std::string desc = "Lyrics melody: " + r.description;
+    out.set("ok", true);
+    out.set("clip", clipToJson(r.notes, rq.bpm, bars, desc));
+    out.set("lines", lineInfo);
+    Json ch = Json::array(); for (const auto& c : r.chordNames) ch.push(c);
+    out.set("chords", ch);
+    out.set("root", sc.root); out.set("scale_index", rq.scale);
     return out;
 }
 

@@ -214,6 +214,16 @@ Json toolSchemas() {
     tb.set("limit", prop("integer", "Max results (default 3)"));
     list.push(tool("find_type_beat_style", "Look up what '<artist or vibe> type beat' listings look like in aggregate (BPM range, minor/major share, common keys, tags) from the type-beat style bank, and get matching generate_midi settings. Statistics come from public listing metadata, never from copying a beat; check sample_size before trusting them.", tb, {"query"}));
 
+    Json ly = scaleSelectorProps();
+    ly.set("lyrics", prop("string", "Lyrics or poetry, one line per row (any language; syllables are counted approximately)"));
+    ly.set("bpm", prop("integer", "40-220"));
+    ly.set("style", enumProp({"rnb", "trap", "hiphop"}, "Feel of the chords/808 under the melody"));
+    ly.set("seed", prop("integer", "Different seeds give different melodies"));
+    ly.set("bass", prop("boolean", "Add an 808 line"));
+    ly.set("output_path", prop("string", "If set, write a .mid file here"));
+    ly.set("include_notes", prop("boolean", "Return every note"));
+    list.push(tool("lyrics_to_midi", "Turn lyrics or poetry into a melody (one line per bar, stressed syllables on chord tones, line ends resolved) with chords and optional 808 in the chosen scale.", ly, {"lyrics"}));
+
     Json lp = Json::object();
     lp.set("style", enumProp({"rnb", "trap", "hiphop"}, "Optional style filter"));
     list.push(tool("list_patterns", "Summarise the rhythm / motif / progression library (built-in + learned dataset).", lp, {}));
@@ -361,6 +371,24 @@ Json callTool(const std::string& name, const Json& a, const PatternLibrary& lib)
             }
         } else if (name == "similar_to_current_clip") {
             return err("similar_to_current_clip only works inside the app; use voice_to_midi with mode 'similar' and a .wav path");
+        } else if (name == "lyrics_to_midi") {
+            Json opt = a;
+            if (a.has("style")) { std::string st = a["style"].str(""); opt.set("style", st); }
+            Json r = lyricsToClip(a["lyrics"].str(""), opt, lib);
+            if (!r["ok"].boolean(false)) return r;
+            for (size_t i = 0; i < r.keys().size(); ++i) if (r.keys()[i] != "clip") out.set(r.keys()[i], r.valueAt(i));
+            const Json& clip = r["clip"];
+            std::vector<Note> notes; int bpm = 120, bars = 4; clipFromJson(clip, notes, bpm, bars);
+            out.set("bpm", bpm); out.set("bars", bars); out.set("note_count", (int) notes.size()); out.set("description", clip["description"].str(""));
+            if (a["include_notes"].boolean(false)) out.set("clip", clip);
+            std::string outPath = a["output_path"].str("");
+            if (!outPath.empty()) {
+                auto bytes = clipToMidi(clip);
+                std::FILE* f = std::fopen(outPath.c_str(), "wb");
+                if (!f) return err("could not write " + outPath);
+                std::fwrite(bytes.data(), 1, bytes.size(), f); std::fclose(f);
+                out.set("midi_file", outPath);
+            }
         } else if (name == "find_type_beat_style") {
             std::string q = a["query"].str("");
             for (auto& c : q) c = (char) std::tolower((unsigned char) c);

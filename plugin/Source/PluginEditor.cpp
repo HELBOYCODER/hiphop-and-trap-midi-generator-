@@ -231,6 +231,12 @@ HipHopMidiEditor::HipHopMidiEditor (HipHopMidiProcessor& p)
         });
     };
     addAndMakeVisible (addFolderButton);
+    lyricsButton.setTooltip ("Turns the text in the prompt box (lyrics or a poem, any language) into a melody with chords, in the selected key and scale.");
+    lyricsButton.onClick = [this] { setStatus (proc.makeFromLyrics (prompt.getText())); };
+    addAndMakeVisible (lyricsButton);
+    mcpButton.setTooltip ("MCP sites the AI can search (datasets, styles, lyrics, poems). Hugging Face is connected by default.");
+    mcpButton.onClick = [this] { showMcpMenu(); };
+    addAndMakeVisible (mcpButton);
     addAndMakeVisible (roll); addAndMakeVisible (drag);
 
     // AI panel
@@ -297,6 +303,69 @@ void HipHopMidiEditor::addToggle (Toggle& t, const String& id, const String& tex
     t.attach = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, id, t.button);
 }
 
+void HipHopMidiEditor::showMcpMenu()
+{
+    auto s = proc.loadAiSettings();
+    PopupMenu m;
+    m.addSectionHeader ("Connected MCP sites (used by the AI)");
+    for (size_t i = 0; i < s.mcp.size(); ++i) m.addItem (100 + (int) i, s.mcp[i].name + "  -  " + s.mcp[i].url, true, s.mcp[i].enabled);
+    m.addSeparator();
+    m.addItem (1, "Add server...");
+    PopupMenu rm;
+    for (size_t i = 0; i < s.mcp.size(); ++i) rm.addItem (200 + (int) i, s.mcp[i].name);
+    m.addSubMenu ("Remove", rm, ! s.mcp.empty());
+    m.addItem (2, "Test connection");
+    m.addItem (3, "Restore default (Hugging Face)");
+    Component::SafePointer<HipHopMidiEditor> safe (this);
+    m.showMenuAsync (PopupMenu::Options().withTargetComponent (mcpButton), [safe, s] (int r) mutable
+    {
+        if (safe == nullptr || r == 0) return;
+        if (r == 1) { safe->addMcpServerDialog(); return; }
+        if (r == 2)
+        {
+            safe->setStatus ("Connecting...");
+            auto servers = s.mcp;
+            Thread::launch ([safe, servers]
+            {
+                StringArray errors;
+                auto tools = McpHub::listTools (servers, &errors);
+                MessageManager::callAsync ([safe, n = tools.size(), errors]
+                {
+                    if (safe != nullptr) safe->setStatus (errors.isEmpty() ? "Connected: " + String ((int) n) + " tools available to the AI." : errors.joinIntoString ("\n"), ! errors.isEmpty());
+                });
+            });
+            return;
+        }
+        if (r == 3) s.mcp = McpHub::defaults();
+        else if (r >= 200 && r < 300 && (size_t) (r - 200) < s.mcp.size()) s.mcp.erase (s.mcp.begin() + (r - 200));
+        else if (r >= 100 && r < 200 && (size_t) (r - 100) < s.mcp.size()) s.mcp[(size_t) (r - 100)].enabled = ! s.mcp[(size_t) (r - 100)].enabled;
+        else return;
+        auto cur = safe->proc.loadAiSettings(); cur.mcp = s.mcp; safe->proc.saveAiSettings (cur);
+    });
+}
+
+void HipHopMidiEditor::addMcpServerDialog()
+{
+    auto* w = new AlertWindow ("Add MCP server", "Streamable-HTTP MCP endpoint (for example https://example.com/mcp).", MessageBoxIconType::NoIcon);
+    w->addTextEditor ("name", "", "Name");
+    w->addTextEditor ("url", "", "URL");
+    w->addTextEditor ("token", "", "Token (optional)", true);
+    w->addButton ("Add", 1, KeyPress (KeyPress::returnKey));
+    w->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
+    Component::SafePointer<HipHopMidiEditor> safe (this);
+    w->enterModalState (true, ModalCallbackFunction::create ([safe, w] (int r)
+    {
+        if (r != 1 || safe == nullptr) return;
+        const auto url = w->getTextEditorContents ("url").trim();
+        if (! url.startsWithIgnoreCase ("http")) { safe->setStatus ("The URL must start with http(s)://", true); return; }
+        auto cur = safe->proc.loadAiSettings();
+        const auto name = w->getTextEditorContents ("name").trim();
+        cur.mcp.push_back ({ name.isEmpty() ? String ("MCP") : name, url, w->getTextEditorContents ("token").trim(), true });
+        safe->proc.saveAiSettings (cur);
+        safe->setStatus ("Added " + url + ". The AI will use its tools on the next request.");
+    }), true);
+}
+
 void HipHopMidiEditor::refreshPresetList()
 {
     presetBox.clear (dontSendNotification);
@@ -317,7 +386,7 @@ void HipHopMidiEditor::refreshAiFields()
 
 void HipHopMidiEditor::persistAiFields()
 {
-    AiBridge::Settings s;
+    auto s = proc.loadAiSettings();   // keeps the MCP server list
     s.provider = (AiBridge::Provider) jmax (0, providerBox.getSelectedId() - 1);
     s.model = model.getText();
     s.endpoint = endpoint.getText();
@@ -435,13 +504,17 @@ void HipHopMidiEditor::resized()
     auto voiceRow = area.removeFromTop (34);
     voiceModeBox.setBounds (voiceRow.removeFromLeft (190));
     voiceRow.removeFromLeft (8);
-    importAudioButton.setBounds (voiceRow.removeFromLeft (130));
+    importAudioButton.setBounds (voiceRow.removeFromLeft (120));
     voiceRow.removeFromLeft (8);
-    recordButton.setBounds (voiceRow.removeFromLeft (120));
+    recordButton.setBounds (voiceRow.removeFromLeft (110));
     voiceRow.removeFromLeft (8);
-    makeVoiceButton.setBounds (voiceRow.removeFromLeft (130));
+    makeVoiceButton.setBounds (voiceRow.removeFromLeft (120));
     voiceRow.removeFromLeft (8);
-    addFolderButton.setBounds (voiceRow.removeFromLeft (170));
+    addFolderButton.setBounds (voiceRow.removeFromLeft (150));
+    voiceRow.removeFromLeft (8);
+    lyricsButton.setBounds (voiceRow.removeFromLeft (110));
+    voiceRow.removeFromLeft (8);
+    mcpButton.setBounds (voiceRow.removeFromLeft (84));
 
     area.removeFromTop (6);
     roll.setBounds (area.removeFromTop (96));

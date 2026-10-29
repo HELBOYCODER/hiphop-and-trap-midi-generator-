@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_core/juce_core.h>
 #include <hhmg/Tools.h>
+#include "McpHub.h"
 #include <functional>
 #include <optional>
 
@@ -17,6 +18,7 @@ struct Settings
     juce::String model = "gemini-2.5-flash";
     juce::String endpoint;  // OpenAI-compatible base URL, e.g. http://localhost:11434/v1
     juce::String apiKey;
+    std::vector<McpHub::Server> mcp = McpHub::defaults();   // external MCP servers (default: Hugging Face)
 };
 
 struct Outcome
@@ -32,6 +34,7 @@ struct ClipTools
 {
     std::function<hhmg::Json()> analyze;                         // analyze_current_clip
     std::function<hhmg::Json (const hhmg::Json&)> similar;       // similar_to_current_clip (applies the result itself)
+    std::function<hhmg::Json (const hhmg::Json&)> lyrics;        // lyrics_to_midi (applies the result itself)
 };
 
 Outcome run (const Settings& settings, const juce::String& prompt, const juce::String& currentSettingsJson,

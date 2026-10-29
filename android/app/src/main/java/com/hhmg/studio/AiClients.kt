@@ -11,7 +11,7 @@ data class AiConfig(val provider: String, val apiKey: String, val model: String,
 class AiOutcome(val ok: Boolean, val message: String, val clip: JSONObject?)
 
 /** Runs the engine's tools for the model, the same set the VST3 plugin and the MCP server expose. */
-class ToolRunner(private val currentClip: () -> JSONObject?) {
+class ToolRunner(private val currentClip: () -> JSONObject?, val external: List<McpHub.ExtTool> = emptyList()) {
     var clip: JSONObject? = null; private set
 
     fun exec(name: String, args: JSONObject): JSONObject = when (name) {
@@ -27,7 +27,11 @@ class ToolRunner(private val currentClip: () -> JSONObject?) {
             r.optJSONObject("clip")?.let { clip = it }
             r.remove("clip"); r
         } ?: JSONObject().put("ok", false).put("error", "no clip yet - ask the user to record or import first")
-        else -> JSONObject(Native.callTool(name, args.put("output_path", "").toString()))   // never let a model write files
+        else -> {
+            val ext = external.firstOrNull { it.exposed == name }
+            if (ext != null) McpHub.call(ext, args)
+            else JSONObject(Native.callTool(name, args.put("output_path", "").toString()))   // never let a model write files
+        }
     }
 }
 
@@ -43,6 +47,8 @@ object Ai {
         "(3) similar_to_current_clip when they want 'something like this'; generate_midi when they describe a new idea; combine references with reference_progression / reference_rhythm. " +
         "Keep the user's key and tempo unless they ask otherwise; explicit user wishes always win. " +
         "(4) Reply in the user's language in 3-6 short lines: the style you recognised, what you made (key, scale, BPM, chords), which reference inspired it, why, and 1-2 tips. " +
+        "You may also have external MCP tools (names start with ext_), e.g. a Hugging Face search that finds MIDI, lyrics and music datasets and shows their licence: use them to recommend sources, always quote the licence, and never suggest using a dataset whose licence forbids it. " +
+        "lyrics_to_midi turns lyrics or poetry (any language) into a melody with chords. " +
         "Never pass output_path. Only use ids returned by find_references."
 
     private fun post(url: String, headers: Map<String, String>, body: JSONObject): Pair<Int, String> {
@@ -58,23 +64,37 @@ object Ai {
         } finally { conn.disconnect() }
     }
 
+    private fun retryable(code: Int) = code == 429 || code == 500 || code == 502 || code == 503 || code == 504
+
+    /** Busy / rate-limited / flaky replies are retried with growing pauses (1.5 s, 3 s). */
+    private fun postRetry(url: String, headers: Map<String, String>, body: JSONObject, attempts: Int = 3): Pair<Int, String> {
+        var last = 0 to ""
+        for (i in 0 until attempts) {
+            last = try { post(url, headers, body) } catch (e: java.io.IOException) { if (i + 1 == attempts) throw e; 0 to "" }
+            if (!retryable(last.first) && last.first != 0 || i + 1 == attempts) break
+            Thread.sleep(1500L * (1 shl i))
+        }
+        return last
+    }
+
     private fun errorText(code: Int, text: String): String {
         val detail = try { JSONObject(text).getJSONObject("error").optString("message") } catch (_: Exception) { "" }
         return "AI service error (HTTP $code)" + if (detail.isNotEmpty()) ": $detail" else ""
     }
 
-    fun run(cfg: AiConfig, prompt: String, context: String, currentClip: () -> JSONObject?): AiOutcome {
+    fun run(cfg: AiConfig, prompt: String, context: String, mcp: List<McpServer> = emptyList(), currentClip: () -> JSONObject?): AiOutcome {
         if (prompt.isBlank()) return AiOutcome(false, "Type what you want first.", null)
         if (cfg.provider == "gemini" && cfg.apiKey.isBlank()) return AiOutcome(false, "Enter your Gemini API key first (aistudio.google.com/apikey).", null)
         if (cfg.provider == "openai" && cfg.endpoint.isBlank()) return AiOutcome(false, "Enter the endpoint, e.g. https://api.openai.com/v1 or http://192.168.1.10:11434/v1", null)
-        val runner = ToolRunner(currentClip)
+        val mcpErrors = ArrayList<String>()
+        val runner = ToolRunner(currentClip, McpHub.tools(mcp, mcpErrors))
         val user = "$prompt\n\nWhat the app heard / current settings: $context"
         return try { if (cfg.provider == "gemini") gemini(cfg, user, runner) else openAi(cfg, user, runner) }
         catch (e: Exception) { AiOutcome(false, "No connection to the AI service (${e.message}).", runner.clip) }
     }
 
     // ---- Gemini function calling -------------------------------------------------------------------------------
-    private fun geminiTools(): JSONArray {
+    private fun geminiTools(ext: List<McpHub.ExtTool>): JSONArray {
         val decls = JSONArray()
         val schemas = JSONArray(Native.toolSchemas())
         for (i in 0 until schemas.length()) {
@@ -88,19 +108,29 @@ object Ai {
             }
             decls.put(d)
         }
+        for (e in ext) {   // tools of connected MCP servers
+            val d = JSONObject().put("name", e.exposed).put("description", e.description.take(400))
+            val sch = McpHub.cleanSchema(e.schema)
+            if (sch.optJSONObject("properties")?.length() ?: 0 > 0) d.put("parameters", sch)
+            decls.put(d)
+        }
         return JSONArray().put(JSONObject().put("functionDeclarations", decls))
     }
 
     private fun gemini(cfg: AiConfig, user: String, runner: ToolRunner): AiOutcome {
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/${cfg.model.trim()}:generateContent"
+        // when the chosen model is overloaded (503/429), lighter models are tried in turn
+        val models = listOf(cfg.model.trim()) + listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash").filter { it != cfg.model.trim() }
+        var modelIndex = 0
+        fun urlFor() = "https://generativelanguage.googleapis.com/v1beta/models/${models[modelIndex]}:generateContent"
         val headers = mapOf("x-goog-api-key" to cfg.apiKey.trim())
         val contents = JSONArray().put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", user))))
         for (turn in 0 until 6) {
             val body = JSONObject()
                 .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", SYSTEM))))
-                .put("contents", contents).put("tools", geminiTools())
-            val (code, text) = post(url, headers, body)
-            if (code !in 200..299) return AiOutcome(false, errorText(code, text), runner.clip)
+                .put("contents", contents).put("tools", geminiTools(runner.external))
+            var (code, text) = postRetry(urlFor(), headers, body)
+            while ((retryable(code) || code == 0) && modelIndex + 1 < models.size) { modelIndex++; val r = postRetry(urlFor(), headers, body, 2); code = r.first; text = r.second }
+            if (code !in 200..299) return AiOutcome(false, errorText(code, text) + if (retryable(code)) " — همه‌ی مدل‌ها شلوغ‌اند؛ یک دقیقه بعد دوباره امتحان کنید." else "", runner.clip)
             val content = try { JSONObject(text).getJSONArray("candidates").getJSONObject(0).getJSONObject("content") }
             catch (_: Exception) { return AiOutcome(false, "The model returned no answer.", runner.clip) }
             val parts = content.optJSONArray("parts") ?: JSONArray()
@@ -115,7 +145,8 @@ object Ai {
             contents.put(content)   // echoed verbatim (keeps thought signatures)
             if (responses.length() == 0) {
                 val c = runner.clip
-                return if (c != null) AiOutcome(true, reply.toString().trim(), c) else AiOutcome(false, reply.toString().trim().ifEmpty { "The model did not generate any MIDI." }, null)
+                val note = if (modelIndex > 0) "\n(پاسخ از ${models[modelIndex]} آمد چون ${models[0]} شلوغ بود)" else ""
+                return if (c != null) AiOutcome(true, reply.toString().trim() + note, c) else AiOutcome(false, reply.toString().trim().ifEmpty { "The model did not generate any MIDI." }, null)
             }
             contents.put(JSONObject().put("role", "user").put("parts", responses))
         }
@@ -123,7 +154,7 @@ object Ai {
     }
 
     // ---- OpenAI-compatible chat completions with tools ---------------------------------------------------------------
-    private fun openAiTools(): JSONArray {
+    private fun openAiTools(ext: List<McpHub.ExtTool>): JSONArray {
         val arr = JSONArray()
         val schemas = JSONArray(Native.toolSchemas())
         for (i in 0 until schemas.length()) {
@@ -131,6 +162,8 @@ object Ai {
             arr.put(JSONObject().put("type", "function").put("function",
                 JSONObject().put("name", t.getString("name")).put("description", t.getString("description")).put("parameters", t.getJSONObject("inputSchema"))))
         }
+        for (e in ext) arr.put(JSONObject().put("type", "function").put("function",
+            JSONObject().put("name", e.exposed).put("description", e.description.take(400)).put("parameters", McpHub.cleanSchema(e.schema))))
         return arr
     }
 
@@ -141,8 +174,8 @@ object Ai {
             .put(JSONObject().put("role", "system").put("content", SYSTEM))
             .put(JSONObject().put("role", "user").put("content", user))
         for (turn in 0 until 6) {
-            val body = JSONObject().put("model", cfg.model.trim()).put("messages", messages).put("tools", openAiTools())
-            val (code, text) = post("$base/chat/completions", headers, body)
+            val body = JSONObject().put("model", cfg.model.trim()).put("messages", messages).put("tools", openAiTools(runner.external))
+            val (code, text) = postRetry("$base/chat/completions", headers, body)
             if (code !in 200..299) return AiOutcome(false, errorText(code, text), runner.clip)
             val msg = try { JSONObject(text).getJSONArray("choices").getJSONObject(0).getJSONObject("message") }
             catch (_: Exception) { return AiOutcome(false, "The model returned no message.", runner.clip) }

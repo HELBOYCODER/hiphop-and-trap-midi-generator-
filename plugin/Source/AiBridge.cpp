@@ -15,13 +15,15 @@ const char* kSystemPrompt =
     "(or analyze_midi / analyze_audio with a path) to recognise its style: key, mode, BPM, chord degrees, swing, looseness and R&B/Trap/Hip-Hop scores. "
     "When they want something like their own clip, call similar_to_current_clip (it draws on the learned reference dataset). "
     "When they name an artist or vibe ('Metro Boomin type beat', 'dark drill'), call find_type_beat_style for the aggregate BPM/key/tag statistics of that style and use its suggested settings; say how large its sample_size is. "
+    "When the user gives lyrics or a poem, call lyrics_to_midi (any language). Tools named ext_<server>_<tool> belong to connected MCP sites (for example Hugging Face datasets): use them to find MIDI datasets, "
+    "style references, lyrics or poems, then turn what you found into notes with lyrics_to_midi or generate_midi, or into a similar idea; say which site the information came from and never claim a file was downloaded unless a tool did it. "
     "(2) Call style_guide with the user's words (any language) for matching recipes; call find_references to find real loops with a similar "
     "key, tempo and style. (3) To combine things, call generate_midi once, taking the progression from one reference (reference_progression), "
     "the melody rhythm from another (reference_rhythm), and the sound settings from the analysis or recipe. Explicit user values always win. "
     "(4) Reply in the user's language in 3-6 short lines: the style you recognised and why, what you combined (name the references), key/scale/BPM/chords, "
     "and 1-2 tips for tuning (which knob to move). Never pass output_path. Do not invent tool names, ids or settings; only use ids returned by find_references.";
 
-hhmg::Json toolsForGemini()
+hhmg::Json toolsForGemini (const std::vector<McpHub::ExtTool>& ext)
 {
     using hhmg::Json;
     Json decls = Json::array();
@@ -42,6 +44,14 @@ hhmg::Json toolsForGemini()
         }
         decls.push (d);
     }
+    for (const auto& e : ext)
+    {
+        Json d = Json::object();
+        d.set ("name", e.exposed); d.set ("description", e.description);
+        Json params = McpHub::cleanSchema (e.schema);
+        if (params["properties"].size() > 0) d.set ("parameters", params);
+        decls.push (d);
+    }
     Json tool = Json::object();
     tool.set ("functionDeclarations", decls);
     Json arr = Json::array();
@@ -49,11 +59,12 @@ hhmg::Json toolsForGemini()
     return arr;
 }
 
-hhmg::Json toolsForOpenAi()
+hhmg::Json toolsForOpenAi (const std::vector<McpHub::ExtTool>& ext)
 {
     using hhmg::Json;
     Json arr = Json::array();
-    for (const auto& t : hhmg::toolSchemas().items())
+    const Json schemas = hhmg::toolSchemas();   // keep alive: items() is a reference into it
+    for (const auto& t : schemas.items())
     {
         Json fn = Json::object();
         fn.set ("name", t["name"]);
@@ -64,13 +75,22 @@ hhmg::Json toolsForOpenAi()
         w.set ("function", fn);
         arr.push (w);
     }
+    for (const auto& e : ext)
+    {
+        Json fn = Json::object();
+        fn.set ("name", e.exposed); fn.set ("description", e.description); fn.set ("parameters", McpHub::cleanSchema (e.schema));
+        Json w = Json::object(); w.set ("type", "function"); w.set ("function", fn);
+        arr.push (w);
+    }
     return arr;
 }
 
 // Runs one tool for the model. generate_midi is intercepted so nothing is written to disk.
 hhmg::Json execTool (const std::string& name, hhmg::Json args, const hhmg::PatternLibrary& lib, Outcome& out,
-                     const ClipTools& clipTools)
+                     const ClipTools& clipTools, const std::vector<McpHub::ExtTool>& ext)
 {
+    for (const auto& e : ext) if (e.exposed == name) return McpHub::callTool (e, args);
+    if (name == "lyrics_to_midi" && clipTools.lyrics) return clipTools.lyrics (args);
     if (name == "generate_midi")
     {
         hhmg::Request rq = hhmg::requestFromJson (args);
@@ -112,6 +132,23 @@ HttpReply postJson (const juce::String& url, const juce::String& headers, const 
     return reply;
 }
 
+// Busy / rate-limited / flaky replies are retried with growing pauses; the pause polls `cancel`.
+bool shouldRetry (int status) { return status == 0 || status == 429 || status == 500 || status == 502 || status == 503 || status == 504; }
+
+HttpReply postWithRetry (const juce::String& url, const juce::String& headers, const hhmg::Json& body, const std::function<bool()>& cancel, int attempts = 3)
+{
+    HttpReply reply;
+    for (int i = 0; i < attempts; ++i)
+    {
+        reply = postJson (url, headers, body);
+        if (! shouldRetry (reply.status) || i + 1 == attempts) break;
+        const int waitMs = 1500 * (1 << i);                       // 1.5 s, 3 s
+        for (int t = 0; t < waitMs && ! cancel(); t += 100) juce::Thread::sleep (100);
+        if (cancel()) break;
+    }
+    return reply;
+}
+
 juce::String errorText (const HttpReply& r)
 {
     if (r.status == 0) return "Could not reach the AI service (check internet / endpoint).";
@@ -132,7 +169,13 @@ Outcome runGemini (const Settings& s, const juce::String& prompt, const juce::St
 {
     using hhmg::Json;
     Outcome out;
-    const juce::String url = "https://generativelanguage.googleapis.com/v1beta/models/" + s.model.trim() + ":generateContent";
+    const auto ext = McpHub::listTools (s.mcp);   // connected MCP sites; unreachable ones are skipped
+    // When the chosen model is overloaded (HTTP 503/429) the next lighter model is tried; the reply says which one answered.
+    juce::StringArray models;
+    models.add (s.model.trim());
+    for (auto* m : { "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash" }) models.addIfNotAlreadyThere (m);
+    int modelIndex = 0;
+    auto urlFor = [&] { return "https://generativelanguage.googleapis.com/v1beta/models/" + models[modelIndex] + ":generateContent"; };
     const juce::String headers = "x-goog-api-key: " + s.apiKey.trim();
 
     Json contents = Json::array();
@@ -152,10 +195,15 @@ Outcome runGemini (const Settings& s, const juce::String& prompt, const juce::St
         spt.set ("text", kSystemPrompt); sp.push (spt); sys.set ("parts", sp);
         body.set ("systemInstruction", sys);
         body.set ("contents", contents);
-        body.set ("tools", toolsForGemini());
+        body.set ("tools", toolsForGemini (ext));
 
-        auto reply = postJson (url, headers, body);
-        if (reply.status < 200 || reply.status >= 300) { out.message = errorText (reply); return out; }
+        auto reply = postWithRetry (urlFor(), headers, body, cancel);
+        while (shouldRetry (reply.status) && modelIndex + 1 < models.size() && ! cancel())
+        {
+            ++modelIndex;                                          // overloaded: fall back to the next model
+            reply = postWithRetry (urlFor(), headers, body, cancel, 2);
+        }
+        if (reply.status < 200 || reply.status >= 300) { out.message = errorText (reply) + (shouldRetry (reply.status) ? " - all models are busy, try again in a minute." : ""); return out; }
 
         Json j;
         try { j = Json::parse (reply.body); } catch (...) { out.message = "Unreadable AI response."; return out; }
@@ -175,7 +223,7 @@ Outcome runGemini (const Settings& s, const juce::String& prompt, const juce::St
             if (part["functionCall"].isObject())
             {
                 const Json& fc = part["functionCall"];
-                Json result = execTool (fc["name"].str(), fc["args"].isObject() ? fc["args"] : Json::object(), lib, out, clipTools);
+                Json result = execTool (fc["name"].str(), fc["args"].isObject() ? fc["args"] : Json::object(), lib, out, clipTools, ext);
                 Json fr = Json::object(); fr.set ("name", fc["name"]); fr.set ("response", result);
                 Json rp = Json::object(); rp.set ("functionResponse", fr);
                 responses.push (rp);
@@ -186,6 +234,7 @@ Outcome runGemini (const Settings& s, const juce::String& prompt, const juce::St
         {
             out.ok = out.result.has_value();
             out.message = juce::String::fromUTF8 (text.c_str());
+            if (modelIndex > 0 && out.ok) out.message += "\n(answered by " + models[modelIndex] + " because " + models[0] + " was busy)";
             if (! out.ok && out.message.isEmpty()) out.message = "The model did not generate any MIDI.";
             return out;
         }
@@ -203,6 +252,7 @@ Outcome runOpenAi (const Settings& s, const juce::String& prompt, const juce::St
 {
     using hhmg::Json;
     Outcome out;
+    const auto ext = McpHub::listTools (s.mcp);   // connected MCP sites; unreachable ones are skipped
     juce::String base = s.endpoint.trim();
     if (base.isEmpty()) { out.message = "Set an endpoint URL (e.g. http://localhost:11434/v1)."; return out; }
     while (base.endsWithChar ('/')) base = base.dropLastCharacters (1);
@@ -223,9 +273,9 @@ Outcome runOpenAi (const Settings& s, const juce::String& prompt, const juce::St
         Json body = Json::object();
         body.set ("model", s.model.trim().toStdString());
         body.set ("messages", messages);
-        body.set ("tools", toolsForOpenAi());
+        body.set ("tools", toolsForOpenAi (ext));
 
-        auto reply = postJson (url, headers, body);
+        auto reply = postWithRetry (url, headers, body, cancel);
         if (reply.status < 200 || reply.status >= 300) { out.message = errorText (reply); return out; }
 
         Json j;
@@ -245,7 +295,7 @@ Outcome runOpenAi (const Settings& s, const juce::String& prompt, const juce::St
         {
             Json args = Json::object();
             try { args = Json::parse (call["function"]["arguments"].str ("{}")); } catch (...) {}
-            Json result = execTool (call["function"]["name"].str(), args, lib, out, clipTools);
+            Json result = execTool (call["function"]["name"].str(), args, lib, out, clipTools, ext);
             Json m = Json::object();
             m.set ("role", "tool"); m.set ("tool_call_id", call["id"]); m.set ("content", result.dump());
             messages.push (m);

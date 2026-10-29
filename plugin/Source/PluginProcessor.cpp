@@ -582,6 +582,38 @@ hhmg::Json HipHopMidiProcessor::similarForAi (const hhmg::Json& options)
     return out;
 }
 
+String HipHopMidiProcessor::makeFromLyrics (const String& lyrics)
+{
+    if (lyrics.trim().isEmpty()) return "Type or paste the lyrics into the prompt box first.";
+    auto r = buildRequest();
+    hhmg::Json o = hhmg::Json::object();
+    o.set ("root", hhmg::noteName (r.root));
+    o.set ("scale", hhmg::allScales()[(size_t) r.scale].id);
+    o.set ("bpm", r.bpm);
+    o.set ("bass", r.bass);
+    o.set ("style", r.mix.trap >= r.mix.rnb && r.mix.trap >= r.mix.hiphop ? "trap" : (r.mix.hiphop >= r.mix.rnb ? "hiphop" : "rnb"));
+    o.set ("seed", (int) Random::getSystemRandom().nextInt (1000));
+    o.set ("lyrics", lyrics.toStdString());
+    auto res = hhmg::lyricsToClip (lyrics.toStdString(), o, *std::atomic_load (&library));
+    if (! res["ok"].boolean (false)) return String (res["error"].str ("Could not read the lyrics."));
+    applyStudioResult (res);
+    return "Melody from " + String (res["lines"].size()) + " lines, in " + String (hhmg::noteName (r.root)) + " " + String (hhmg::allScales()[(size_t) r.scale].label) + " (scale-locked).";
+}
+
+hhmg::Json HipHopMidiProcessor::lyricsForAi (const hhmg::Json& options)
+{
+    hhmg::Json opt = options;
+    if (! opt.has ("seed")) opt.set ("seed", (int) Random::getSystemRandom().nextInt (1000));
+    auto res = hhmg::lyricsToClip (options["lyrics"].str (""), opt, *std::atomic_load (&library));
+    if (! res["ok"].boolean (false)) return res;
+    WeakReference<HipHopMidiProcessor> ref (this);
+    MessageManager::callAsync ([ref, res] { if (ref != nullptr) ref->applyStudioResult (res); });
+    hhmg::Json out = hhmg::Json::object();
+    for (size_t i = 0; i < res.keys().size(); ++i) if (res.keys()[i] != "clip") out.set (res.keys()[i], res.valueAt (i));
+    out.set ("applied", true);
+    return out;
+}
+
 void HipHopMidiProcessor::addMidiFolderAsync (const File& dir, std::function<void (String)> done)
 {
     WeakReference<HipHopMidiProcessor> ref (this);
@@ -621,6 +653,7 @@ struct HipHopMidiProcessor::AiThread : public Thread
         AiBridge::ClipTools tools;
         tools.analyze = [this] { return owner.analyzeClipJson(); };
         tools.similar = [this] (const hhmg::Json& o) { return owner.similarForAi (o); };
+        tools.lyrics = [this] (const hhmg::Json& o) { return owner.lyricsForAi (o); };
         auto outcome = AiBridge::run (settings, prompt, ctx, *lib, [this] { return threadShouldExit(); }, tools);
         if (threadShouldExit()) return;
         WeakReference<HipHopMidiProcessor> ref (&owner);
@@ -653,6 +686,7 @@ AiBridge::Settings HipHopMidiProcessor::loadAiSettings() const
         s.model = xml->getStringAttribute ("model", s.model);
         s.endpoint = xml->getStringAttribute ("endpoint");
         s.apiKey = xml->getStringAttribute ("apiKey");
+        s.mcp = McpHub::loadFrom (xml.get());
     }
     if (s.apiKey.isEmpty() && s.provider == AiBridge::Provider::gemini)
         s.apiKey = SystemStats::getEnvironmentVariable ("GEMINI_API_KEY", {});
@@ -666,6 +700,7 @@ void HipHopMidiProcessor::saveAiSettings (const AiBridge::Settings& s)
     x.setAttribute ("model", s.model);
     x.setAttribute ("endpoint", s.endpoint);
     x.setAttribute ("apiKey", s.apiKey);
+    McpHub::saveTo (x, s.mcp);
     auto f = settingsFile();
     f.getParentDirectory().createDirectory();
     x.writeTo (f);

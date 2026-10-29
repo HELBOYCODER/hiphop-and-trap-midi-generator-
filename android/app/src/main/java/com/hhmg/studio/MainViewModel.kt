@@ -38,6 +38,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var analysisText by mutableStateOf(""); private set
     private var analysis: JSONObject? = null
 
+    // ---- generator (same controls as the VST3: key/scale, style mix, complexity, humanize, swing, parts, seed, presets) ----
+    var tab by mutableStateOf(0)                       // 0 voice, 1 generate, 2 lyrics
+    var gRoot by mutableStateOf(9); var gScale by mutableStateOf("minor"); var gBars by mutableStateOf(4); var gBpm by mutableStateOf(140)
+    var gRnb by mutableStateOf(0.15f); var gTrap by mutableStateOf(1f); var gHip by mutableStateOf(0.3f)
+    var gComplexity by mutableStateOf(0.5f); var gHumanize by mutableStateOf(0.3f); var gSwing by mutableStateOf(0f); var gVelVar by mutableStateOf(0.3f)
+    var gChords by mutableStateOf(true); var gMelody by mutableStateOf(true); var gBass by mutableStateOf(true); var gOctave by mutableStateOf(5)
+    var gSeed by mutableStateOf(1)
+    var scales by mutableStateOf<List<Pair<String, String>>>(emptyList())
+    var lyricsText by mutableStateOf("")
+    var clipFromVoice by mutableStateOf(false); private set
+
     var mode by mutableStateOf(Mode.MELODY)
     var style by mutableStateOf("")          // "" = detected automatically
     var bass by mutableStateOf(true)
@@ -54,6 +65,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var aiBusy by mutableStateOf(false); private set
     var aiMessage by mutableStateOf(""); private set
     var libraryInfo by mutableStateOf(""); private set
+    var mcpServers by mutableStateOf(McpHub.parse(prefs.getString("mcp", null)))
+    var mcpStatus by mutableStateOf("")
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -63,6 +76,77 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             try { java.io.File(getApplication<Application>().filesDir, "user_library.json").takeIf { it.exists() }?.readText()?.let { Native.loadUserLibrary(it) } } catch (_: Exception) {}
             libraryInfo = Native.libraryInfo()
+            try {
+                val arr = JSONObject(Native.callTool("list_scales", "{}")).getJSONArray("scales")
+                scales = (0 until arr.length()).map { arr.getJSONObject(it).let { o -> o.getString("id") to o.getString("label") } }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private val noteNames = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+    fun noteLabel(i: Int) = noteNames[((i % 12) + 12) % 12]
+
+    private fun genArgs(): JSONObject = JSONObject().put("root", gRoot).put("scale", gScale).put("bpm", gBpm).put("bars", gBars)
+        .put("style_mix", JSONObject().put("rnb", gRnb.toDouble()).put("trap", gTrap.toDouble()).put("hiphop", gHip.toDouble()))
+        .put("complexity", gComplexity.toDouble()).put("humanize", gHumanize.toDouble()).put("swing", gSwing.toDouble())
+        .put("velocity_variation", gVelVar.toDouble()).put("chords", gChords).put("melody", gMelody).put("bass", gBass)
+        .put("melody_octave", gOctave).put("seed", gSeed)
+
+    /** Generate without any recording (the engine of the VST3). */
+    fun generate(newSeed: Boolean = true) {
+        stopPlayback()
+        if (newSeed) gSeed = (1..99999).random()
+        busy = true; status = "در حال ساخت..."
+        val args = genArgs()
+        viewModelScope.launch(Dispatchers.Default) {
+            val r = JSONObject(Native.generateTool(args.toString()))
+            withContext(Dispatchers.Main) {
+                busy = false
+                if (!r.optBoolean("ok")) { status = r.optString("error", "خطا"); return@withContext }
+                clip = Clip(r.getJSONObject("clip")); clipFromVoice = false
+                val ch = r.optJSONArray("chords")
+                analysisText = "کلید: ${r.optString("scale")}  |  BPM: ${clip!!.bpm}" + (ch?.let { "\nآکوردها: " + (0 until it.length()).joinToString(" | ") { i -> it.getString(i) } } ?: "")
+                status = "آماده: ${clip!!.description}"
+            }
+        }
+    }
+
+    fun applyPreset(i: Int) {
+        data class P(val scale: String, val bpm: Int, val rnb: Float, val trap: Float, val hip: Float, val cx: Float, val hum: Float, val swing: Float, val bass: Boolean, val bars: Int)
+        val p = listOf(
+            P("minor", 140, .1f, 1f, .2f, .35f, .15f, 0f, true, 4), P("dorian", 78, 1f, 0f, .1f, .85f, .5f, .25f, false, 8),
+            P("pentatonic_minor", 90, .1f, 0f, 1f, .4f, .6f, .5f, true, 4), P("phrygian", 132, .6f, .7f, 0f, .6f, .35f, .1f, true, 8),
+            P("major", 86, 1f, 0f, .3f, 1f, .7f, .35f, false, 4))[i]
+        gScale = p.scale; gBpm = p.bpm; gRnb = p.rnb; gTrap = p.trap; gHip = p.hip; gComplexity = p.cx; gHumanize = p.hum; gSwing = p.swing; gBass = p.bass; gBars = p.bars
+        generate(true)
+    }
+
+    /** Lyrics / poetry (any language) -> melody + chords. */
+    fun makeFromLyrics() {
+        if (lyricsText.isBlank()) { status = "اول شعر را بنویسید."; return }
+        stopPlayback(); busy = true; status = "در حال ساخت ملودی از شعر..."
+        val args = genArgs().put("lyrics", lyricsText).put("include_notes", true)
+        args.put("style", if (gTrap >= gRnb && gTrap >= gHip) "trap" else if (gHip >= gRnb) "hiphop" else "rnb")
+        viewModelScope.launch(Dispatchers.Default) {
+            val r = JSONObject(Native.callTool("lyrics_to_midi", args.toString()))
+            withContext(Dispatchers.Main) {
+                busy = false
+                if (!r.optBoolean("ok")) { status = r.optString("error", "خطا"); return@withContext }
+                clip = Clip(r.getJSONObject("clip")); clipFromVoice = false
+                val ch = r.optJSONArray("chords")
+                analysisText = "خطوط: ${r.optJSONArray("lines")?.length() ?: 0}  |  BPM: ${clip!!.bpm}" + (ch?.let { "\nآکوردها: " + (0 until it.length()).joinToString(" | ") { i -> it.getString(i) } } ?: "")
+                status = "آماده: ${clip!!.description}"
+            }
+        }
+    }
+
+    fun setMcp(list: List<McpServer>) { mcpServers = list; prefs.edit().putString("mcp", McpHub.serialize(list)).apply() }
+    fun testMcp() {
+        mcpStatus = "در حال اتصال..."
+        viewModelScope.launch(Dispatchers.IO) {
+            val errors = ArrayList<String>()
+            val tools = McpHub.tools(mcpServers, errors)
+            withContext(Dispatchers.Main) { mcpStatus = if (errors.isEmpty()) "متصل: ${tools.size} ابزار از ${mcpServers.count { it.enabled }} سرور" else errors.joinToString("\n") }
         }
     }
 
@@ -147,7 +231,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.Main) {
                 busy = false
                 if (!r.optBoolean("ok")) { status = r.optString("error", "خطا"); return@withContext }
-                clip = Clip(r.getJSONObject("clip"))
+                clip = Clip(r.getJSONObject("clip")); clipFromVoice = true
                 analysis = r.optJSONObject("analysis")
                 analysisText = describe(r)
                 status = "آماده: ${clip!!.description}"
@@ -225,11 +309,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val ctx = JSONObject().put("analysis", analysis ?: JSONObject()).put("mode", mode.key).put("style", style).toString()
         val current = clip?.json
         viewModelScope.launch(Dispatchers.IO) {
-            val out = Ai.run(AiConfig(provider, apiKey, model, endpoint), prompt, ctx) { current }
+            val out = Ai.run(AiConfig(provider, apiKey, model, endpoint), prompt, ctx, mcpServers) { current }
             withContext(Dispatchers.Main) {
                 aiBusy = false
                 aiMessage = out.message
-                out.clip?.let { stopPlayback(); clip = Clip(it); status = "ساخته‌شده با AI: ${clip!!.description}" }
+                out.clip?.let { stopPlayback(); clip = Clip(it); clipFromVoice = false; status = "ساخته‌شده با AI: ${clip!!.description}" }
             }
         }
     }

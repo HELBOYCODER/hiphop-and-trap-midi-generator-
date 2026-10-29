@@ -116,12 +116,36 @@ static int serveMcp(PatternLibrary& lib, bool allowIndex) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "usage: hhmg-cli tools | call <tool> | mcp [--allow-index] | index <dir> | voice <wav>   [--patterns f.json]\n";
+        std::cerr << "usage: hhmg-cli list | describe <tool> | tools | call <tool> [--args JSON] | lyrics <file|-> | mcp [--allow-index] | index <dir> | voice <wav>   [--patterns f.json]\nEvery command prints JSON (exit 0 = ok). Run `hhmg-cli list` first.\n";
         return 2;
     }
     std::string cmd = argv[1];
     PatternLibrary lib = loadLibrary(argc, argv);
     if (cmd == "tools") { std::cout << toolSchemas().dump(true) << "\n"; return 0; }
+    if (cmd == "list") {
+        Json arr = Json::array();
+        const Json schemas = toolSchemas();
+        for (const auto& t : schemas.items()) { Json o = Json::object(); o.set("name", t["name"]); o.set("description", t["description"]); arr.push(o); }
+        std::cout << arr.dump(true) << "\n"; return 0;
+    }
+    if (cmd == "describe" && argc >= 3) {
+        const Json schemas = toolSchemas();
+        for (const auto& t : schemas.items()) if (t["name"].str() == argv[2]) { std::cout << t.dump(true) << "\n"; return 0; }
+        std::cerr << "{\"ok\":false,\"error\":\"unknown tool\"}\n"; return 1;
+    }
+    if (cmd == "lyrics" && argc >= 3) {
+        std::stringstream ss;
+        if (std::string(argv[2]) == "-") ss << std::cin.rdbuf(); else { std::ifstream f(argv[2]); ss << f.rdbuf(); }
+        Json args = Json::object();
+        args.set("lyrics", ss.str());
+        for (const char* k : {"root", "scale", "style"}) if (!optValue(argc, argv, (std::string("--") + k).c_str()).empty()) args.set(k, optValue(argc, argv, (std::string("--") + k).c_str()));
+        if (!optValue(argc, argv, "--bpm").empty()) args.set("bpm", std::atoi(optValue(argc, argv, "--bpm").c_str()));
+        if (!optValue(argc, argv, "--seed").empty()) args.set("seed", std::atoi(optValue(argc, argv, "--seed").c_str()));
+        args.set("output_path", optValue(argc, argv, "--out", "lyrics.mid"));
+        Json out = callTool("lyrics_to_midi", args, lib);
+        std::cout << out.dump(true) << "\n";
+        return out["ok"].boolean(false) ? 0 : 1;
+    }
     if (cmd == "mcp") return serveMcp(lib, hasFlag(argc, argv, "--allow-index"));
     if (cmd == "index" && argc >= 3) {
         PatternLibrary delta; std::string e;
@@ -144,7 +168,9 @@ int main(int argc, char** argv) {
         return out["ok"].boolean(false) ? 0 : 1;
     }
     if (cmd == "call" && argc >= 3) {
-        std::stringstream ss; ss << std::cin.rdbuf();
+        std::stringstream ss;
+        const std::string inlineArgs = optValue(argc, argv, "--args");
+        if (!inlineArgs.empty()) ss << inlineArgs; else ss << std::cin.rdbuf();
         Json args;
         try { args = ss.str().find_first_not_of(" \t\r\n") == std::string::npos ? Json::object() : Json::parse(ss.str()); }
         catch (const std::exception& e) { std::cerr << "bad JSON: " << e.what() << "\n"; return 2; }

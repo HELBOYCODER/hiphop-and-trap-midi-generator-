@@ -245,6 +245,25 @@ int main() {
       CHECK(!callTool("find_type_beat_style", Json::parse("{\"query\":\"x\"}"), PatternLibrary::builtin())["note"].str("").empty(), "empty bank explains itself");
       CHECK(Json::parse(bank.toJson().dump())["type_beats"].size() == 2, "type beats persist"); }
 
+    // lyrics -> melody
+    { CHECK(countSyllables("beautiful") == 3 && countSyllables("midnight") == 2 && countSyllables("the") == 1 && countSyllables("make") == 1 && countSyllables("table") == 2,
+            "syllables %d %d %d %d %d", countSyllables("beautiful"), countSyllables("midnight"), countSyllables("the"), countSyllables("make"), countSyllables("table"));
+      CHECK(countSyllables("\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85") >= 2, "persian word has syllables");   // سلام
+      for (const char* sc : {"minor", "major", "phrygian", "pentatonic_minor", "blues"})
+          for (const char* style : {"trap", "rnb", "hiphop"}) {
+              Json a = Json::object();
+              a.set("lyrics", "midnight in the city lights\nI keep running through the rain\nbeautiful and broken\nsing it back again again\n\xD8\xB4\xD8\xA8 \xD9\x88 \xD8\xB3\xD8\xA7\xD8\xAF\xD9\x87 \xD8\xAF\xD9\x84\xD9\x85 \xD9\x85\xDB\x8C\xD9\x84\xD8\xB1\xD8\xB2\xD9\x87");
+              a.set("root", "F#"); a.set("scale", sc); a.set("style", style); a.set("seed", 5);
+              Json r = callTool("lyrics_to_midi", a, lib);
+              CHECK(r["ok"].boolean() && r["note_count"].integer() > 20 && r["lines"].size() == 5, "lyrics_to_midi %s %s: %s", sc, style, r.dump().substr(0, 200).c_str());
+              a.set("include_notes", true);
+              Json rn = callTool("lyrics_to_midi", a, lib);
+              std::vector<Note> cn; int cb = 0, cbars = 0; clipFromJson(rn["clip"], cn, cb, cbars);
+              Scale s2{parseRoot("F#"), findScale(sc)};
+              for (const auto& n : cn) { bool ok = n.channel == kMelody ? s2.contains(n.pitch) : s2.chordContains(n.pitch); if (!ok) { CHECK(false, "lyrics out-of-scale %d (%s %s)", n.pitch, sc, style); break; } }
+          }
+      CHECK(!callTool("lyrics_to_midi", Json::parse("{\"lyrics\":\"\"}"), lib)["ok"].boolean(true), "empty lyrics rejected"); }
+
     // MIDI file header
     { Request rq; Result r = generate(rq, lib); auto b = writeMidi(r);
       CHECK(b.size() > 40 && b[0] == 'M' && b[1] == 'T' && b[2] == 'h' && b[3] == 'd', "SMF header");

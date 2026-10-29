@@ -17,6 +17,12 @@ Json transcriptionToJson(const Transcription& t); // contour + notes + bpm
 Json studioProcess(const std::string& mode, const std::vector<Note>& melody, double bpm, bool bpmKnown,
                    const Json& options, const PatternLibrary& lib);
 
+// Lyrics / poetry -> melody: syllables (approximate; Latin and Persian/Arabic script) are placed on the rhythm grid,
+// stressed syllables land on chord tones, line endings resolve. One line = one bar (long lines take two).
+// options: root, scale, bpm, style (rnb|trap|hiphop), seed, complexity, bass.  Returns {ok, clip, lines:[{text,syllables}], chords}
+int countSyllables(const std::string& word);
+Json lyricsToClip(const std::string& lyrics, const Json& options, const PatternLibrary& lib);
+
 // "similar" for a clip already in the app: melody = its melody channel (or everything but bass), tempo = the clip's.
 Json similarToClip(const Json& clip, const Json& options, const PatternLibrary& lib);
 

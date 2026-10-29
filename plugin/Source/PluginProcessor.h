@@ -65,6 +65,8 @@ public:
     // ---- your own MIDI dataset (profiles only, notes are not kept); saved to Documents/HipHopMidiGenerator/user_library.json
     void addMidiFolderAsync (const juce::File& dir, std::function<void (juce::String)> done);
     juce::File userLibraryFileForTest() const { return userLibraryFile(); }
+    juce::String makeFromLyrics (const juce::String& lyrics);   // lyrics / poem (any language) -> melody + chords in the current key
+    hhmg::Json lyricsForAi (const hhmg::Json& options);
     hhmg::Json similarForAi (const hhmg::Json& options);  // AI tool: similar_to_current_clip (called on the AI thread)
 
     // style recognition
