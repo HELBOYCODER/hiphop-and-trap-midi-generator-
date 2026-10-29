@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.HipHopStudio" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF111215</item>
+        <item name="android:statusBarColor">#FF111215</item>
+        <item name="android:navigationBarColor">#FF111215</item>
+    </style>
+</resources>

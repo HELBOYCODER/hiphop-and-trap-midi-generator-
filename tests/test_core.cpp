@@ -1,6 +1,8 @@
 #include "hhmg/Analyze.h"
 #include "hhmg/Guide.h"
+#include "hhmg/Studio.h"
 #include "hhmg/Tools.h"
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -139,6 +141,53 @@ int main() {
       CHECK(gen["ok"].boolean() && gen["degrees"].size() >= 4 && gen["degrees"].at(0).integer() == 1 && gen["degrees"].at(1).integer() == 6, "reference progression used: %s", gen.dump().c_str());
       CHECK(gen["out_of_scale_notes"].integer() == 0, "reference generate in scale");
       CHECK(!callTool("generate_midi", Json::parse("{\"reference_progression\":\"nope\"}"), lib2)["ok"].boolean(true), "unknown reference rejected"); }
+
+    // Voice -> MIDI: synthesise a sung phrase (harmonics + vibrato + breaths between notes) and transcribe it
+    { const int sr = 16000;
+      const int phrase[] = {57, 60, 64, 62, 60, 57, 55, 57};            // A3 C4 E4 D4 C4 A3 G3 A3
+      const double bpm = 120, noteSec = 60.0 / bpm / 2;                   // eighth notes
+      std::vector<float> audio((size_t) (sr * 0.3), 0.0f);
+      uint32_t rngState = 12345;
+      for (int pitch : phrase) {
+          double f0 = 440.0 * std::pow(2.0, (pitch - 69) / 12.0);
+          size_t n = (size_t) (sr * (noteSec - 0.04)), base = audio.size();
+          audio.resize(base + n + (size_t) (sr * 0.04), 0.0f);
+          double ph = 0;
+          for (size_t i = 0; i < n; ++i) {
+              double t = (double) i / sr, vib = 1.0 + 0.012 * std::sin(6.283185307 * 5.5 * t);   // ~20 cent vibrato
+              ph += 6.283185307 * f0 * vib / sr;
+              double env = std::min(1.0, t / 0.03) * std::min(1.0, (noteSec - 0.04 - t) / 0.03);
+              double s = std::sin(ph) + 0.5 * std::sin(2 * ph) + 0.25 * std::sin(3 * ph);
+              rngState = rngState * 1664525u + 1013904223u;
+              audio[base + i] = (float) (0.3 * env * s + 0.002 * ((rngState >> 16) / 32768.0 - 1.0));
+          }
+      }
+      TranscribeOptions to;
+      Transcription tr = transcribeAudio(audio, sr, to);
+      CHECK(tr.error.empty(), "transcribe error: %s", tr.error.c_str());
+      CHECK(tr.notes.size() == 8, "expected 8 notes, got %zu", tr.notes.size());
+      int hit = 0;
+      for (size_t i = 0; i < tr.notes.size() && i < 8; ++i) if (tr.notes[i].pitch == phrase[i]) ++hit;
+      std::printf("transcribe: %zu notes, %d/8 pitches exact, bpm %.1f\n", tr.notes.size(), hit, tr.bpm);
+      CHECK(hit >= 7, "pitch accuracy %d/8", hit);
+      CHECK(std::fabs(tr.bpm - 120) < 6 || std::fabs(tr.bpm - 60) < 3 || std::fabs(tr.bpm - 240) < 12, "bpm estimate %.1f", tr.bpm);
+      // all three studio modes stay in scale and produce MIDI
+      for (const char* mode : {"melody", "melody_plus", "similar"})
+          for (const char* style : {"", "trap", "rnb", "hiphop"}) {
+              Json opt = Json::object(); opt.set("style", style); opt.set("seed", 3);
+              Json r = studioProcess(mode, tr.notes, tr.bpm, true, opt, lib);
+              CHECK(r["ok"].boolean(), "studio %s", mode);
+              std::vector<Note> cn; int cb = 0, cbars = 0; clipFromJson(r["clip"], cn, cb, cbars);
+              CHECK(!cn.empty() && !clipToMidi(r["clip"]).empty(), "clip %s", mode);
+              Analysis an = analyzeNotes({}, tr.notes, tr.bpm, lib, true);
+              Scale sc{an.root, an.scale};
+              for (const auto& n : cn) {
+                  bool ok = n.channel == kMelody ? sc.contains(n.pitch) : sc.chordContains(n.pitch);
+                  if (!ok) { CHECK(false, "studio %s style '%s' out-of-scale pitch %d", mode, style, n.pitch); break; }
+              }
+          }
+      Transcription bad = transcribeAudio(std::vector<float>((size_t) sr, 0.0f), sr, to);
+      CHECK(!bad.error.empty(), "silence is rejected"); }
 
     // MIDI file header
     { Request rq; Result r = generate(rq, lib); auto b = writeMidi(r);

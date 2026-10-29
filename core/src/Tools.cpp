@@ -102,6 +102,8 @@ Json resultToJson(const Result& r, bool includeNotes) {
     o.set("chords", ch);
     Json dg = Json::array(); for (int d : r.degrees) dg.push(d);
     o.set("degrees", dg);
+    o.set("bpm", r.request.bpm);
+    o.set("bars", r.request.bars);
     o.set("note_count", (int) r.notes.size());
     o.set("out_of_scale_notes", countOutOfScale(r));
     if (includeNotes) {

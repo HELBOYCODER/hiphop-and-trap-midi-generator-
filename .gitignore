@@ -8,3 +8,11 @@ data/raw/
 data/telegram/
 *.session
 patterns.local.json
+
+# Android
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab

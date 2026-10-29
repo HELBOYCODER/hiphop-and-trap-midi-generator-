@@ -19,7 +19,7 @@ option(HHMG_BUILD_TESTS "Build core tests" ON)
 
 # ---- dependency-free core (theory, patterns, generator, MIDI writer, tool layer) -------------------
 add_library(hhmg_core STATIC
-  core/src/Theory.cpp core/src/Patterns.cpp core/src/Generator.cpp core/src/MidiFile.cpp core/src/Tools.cpp core/src/Guide.cpp core/src/MidiRead.cpp core/src/Analyze.cpp)
+  core/src/Theory.cpp core/src/Patterns.cpp core/src/Generator.cpp core/src/MidiFile.cpp core/src/Tools.cpp core/src/Guide.cpp core/src/MidiRead.cpp core/src/Analyze.cpp core/src/Transcribe.cpp core/src/Studio.cpp)
 target_include_directories(hhmg_core PUBLIC core/include)
 set_target_properties(hhmg_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(MSVC)
