@@ -13,7 +13,7 @@ juce_add_plugin(HipHopMidiGenerator
   NEEDS_CURL TRUE   # Linux only: libcurl for the AI bridge (macOS/Windows use the OS HTTP stack)
   COPY_PLUGIN_AFTER_BUILD FALSE)
 
-juce_add_binary_data(HHMGData SOURCES ../data/patterns.pop909.json ../data/patterns.cymatics.json)
+juce_add_binary_data(HHMGData SOURCES ../data/patterns.pop909.json ../data/patterns.cymatics.json ../data/typebeat_styles.json)
 
 target_sources(HipHopMidiGenerator PRIVATE
   Source/PluginProcessor.cpp

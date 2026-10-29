@@ -26,11 +26,25 @@ struct Reference {
     std::vector<RhythmNote> rhythm;          // one representative bar of melody onsets
 };
 
+// What "<artist/vibe> type beat" listings look like in aggregate (tempo range, key mood, tags). Statistics from public
+// listing metadata only - no audio, no MIDI, no copy of any beat.
+struct TypeBeatStyle {
+    std::string name;                 // e.g. "metro boomin"
+    int count = 0;                    // how many listings the statistics come from
+    double bpmLow = 0, bpmMedian = 0, bpmHigh = 0;
+    double minorShare = 0.5;          // 0..1
+    std::vector<std::string> topKeys; // "F# minor", ...
+    std::vector<std::string> tags;    // dark, melodic, drill ...
+    double rnb = 0.1, trap = 1.0, hiphop = 0.2;
+    std::vector<std::string> sources;
+};
+
 struct PatternLibrary {
     std::vector<Rhythm> rhythms;
     std::vector<Motif> motifs;
     std::vector<Progression> progressions;
     std::vector<Reference> references;
+    std::vector<TypeBeatStyle> typeBeats;
 
     static PatternLibrary builtin();
     void mergeJson(const Json& j); // throws std::runtime_error on malformed input

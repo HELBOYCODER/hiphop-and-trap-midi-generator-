@@ -105,6 +105,17 @@ void PatternLibrary::mergeJson(const Json& j) {
             if (n.size() >= 2) x.rhythm.push_back({n.at(0).num(), n.at(1).num(), n.size() > 2 ? n.at(2).integer() : 90});
         if (!x.id.empty() && !x.degrees.empty()) references.push_back(std::move(x));
     }
+    for (const auto& t : j["type_beats"].items()) {
+        TypeBeatStyle x;
+        x.name = t["name"].str(""); x.count = t["count"].integer();
+        if (t["bpm"].size() >= 3) { x.bpmLow = t["bpm"].at(0).num(); x.bpmMedian = t["bpm"].at(1).num(); x.bpmHigh = t["bpm"].at(2).num(); }
+        x.minorShare = t["minor_share"].num(0.5);
+        for (const auto& k : t["keys"].items()) x.topKeys.push_back(k.str(""));
+        for (const auto& k : t["tags"].items()) x.tags.push_back(k.str(""));
+        for (const auto& k : t["sources"].items()) x.sources.push_back(k.str(""));
+        x.rnb = t["mix"]["rnb"].num(0.1); x.trap = t["mix"]["trap"].num(1.0); x.hiphop = t["mix"]["hiphop"].num(0.2);
+        if (!x.name.empty() && x.bpmMedian > 0) typeBeats.push_back(std::move(x));
+    }
 }
 
 Json PatternLibrary::toJson() const {
@@ -144,6 +155,19 @@ Json PatternLibrary::toJson() const {
         refs.push(x);
     }
     o.set("references", refs);
+    Json tb = Json::array();
+    for (const auto& t : typeBeats) {
+        Json x = Json::object();
+        x.set("name", t.name); x.set("count", t.count);
+        Json b = Json::array(); b.push(t.bpmLow); b.push(t.bpmMedian); b.push(t.bpmHigh); x.set("bpm", b);
+        x.set("minor_share", t.minorShare);
+        Json k = Json::array(); for (const auto& v : t.topKeys) k.push(v); x.set("keys", k);
+        Json g = Json::array(); for (const auto& v : t.tags) g.push(v); x.set("tags", g);
+        Json m = Json::object(); m.set("rnb", t.rnb); m.set("trap", t.trap); m.set("hiphop", t.hiphop); x.set("mix", m);
+        Json sr = Json::array(); for (const auto& v : t.sources) sr.push(v); x.set("sources", sr);
+        tb.push(x);
+    }
+    o.set("type_beats", tb);
     return o;
 }
 

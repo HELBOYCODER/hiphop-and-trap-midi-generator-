@@ -229,6 +229,22 @@ int main() {
       Transcription bad = transcribeAudio(std::vector<float>((size_t) sr, 0.0f), sr, to);
       CHECK(!bad.error.empty(), "silence is rejected"); }
 
+    // type-beat style bank
+    { PatternLibrary bank = PatternLibrary::builtin();
+      CHECK(bank.typeBeats.empty(), "builtin bank starts empty");
+      bank.mergeJson(Json::parse("{\"type_beats\":[{\"name\":\"metro boomin\",\"count\":42,\"bpm\":[130,141,152],\"minor_share\":0.9,\"keys\":[\"F# minor\",\"C# minor\"],\"tags\":[\"dark\",\"hard\"],\"mix\":{\"rnb\":0.1,\"trap\":1,\"hiphop\":0.2}},"
+                                  "{\"name\":\"smooth rnb\",\"count\":30,\"bpm\":[70,85,95],\"minor_share\":0.4,\"keys\":[\"A major\"],\"tags\":[\"rnb\"],\"mix\":{\"rnb\":1,\"trap\":0.2,\"hiphop\":0.2}}]}"));
+      Json r = callTool("find_type_beat_style", Json::parse("{\"query\":\"Metro Boomin type beat\"}"), bank);
+      CHECK(r["ok"].boolean() && r["styles"].size() >= 1 && r["styles"].at(0)["name"].str("") == "metro boomin", "type beat lookup %s", r.dump().c_str());
+      CHECK(r["styles"].at(0)["sample_size"].integer() == 42, "sample size reported");
+      const Json& sg = r["styles"].at(0)["suggested_generate_midi_settings"];
+      CHECK(sg["bpm"].integer() == 141 && sg["root"].str("") == "F#" && sg["bass"].boolean(false), "suggested settings %s", sg.dump().c_str());
+      Json gen = Json::object(); gen.set("root", sg["root"]); gen.set("scale", sg["scale"]); gen.set("bpm", sg["bpm"]); gen.set("style_mix", sg["style_mix"]);
+      CHECK(callTool("generate_midi", gen, bank)["out_of_scale_notes"].integer() == 0, "generate from type-beat settings");
+      CHECK(callTool("find_type_beat_style", Json::parse("{\"query\":\"zzz\"}"), bank)["styles"].size() == 0, "no match");
+      CHECK(!callTool("find_type_beat_style", Json::parse("{\"query\":\"x\"}"), PatternLibrary::builtin())["note"].str("").empty(), "empty bank explains itself");
+      CHECK(Json::parse(bank.toJson().dump())["type_beats"].size() == 2, "type beats persist"); }
+
     // MIDI file header
     { Request rq; Result r = generate(rq, lib); auto b = writeMidi(r);
       CHECK(b.size() > 40 && b[0] == 'M' && b[1] == 'T' && b[2] == 'h' && b[3] == 'd', "SMF header");

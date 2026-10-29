@@ -58,7 +58,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     init {
         viewModelScope.launch(Dispatchers.IO) {
             val am = getApplication<Application>().assets
-            for (f in listOf("patterns.pop909.json", "patterns.cymatics.json")) {
+            for (f in listOf("patterns.pop909.json", "patterns.cymatics.json", "typebeat_styles.json")) {
                 try { Native.loadPatterns(am.open(f).bufferedReader().use { it.readText() }) } catch (_: Exception) {}
             }
             try { java.io.File(getApplication<Application>().filesDir, "user_library.json").takeIf { it.exists() }?.readText()?.let { Native.loadUserLibrary(it) } } catch (_: Exception) {}

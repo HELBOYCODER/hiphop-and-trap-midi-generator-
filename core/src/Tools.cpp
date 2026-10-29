@@ -209,6 +209,11 @@ Json toolSchemas() {
     sc2.set("bass", prop("boolean", "Add an 808 line"));
     list.push(tool("similar_to_current_clip", "Make a new idea similar to the clip currently loaded in the app (same key, tempo, feel and rhythm), drawing on the reference dataset. Only available inside the app.", sc2, {}));
 
+    Json tb = Json::object();
+    tb.set("query", prop("string", "Artist or vibe, e.g. 'Metro Boomin', 'dark drill', 'melodic trap', 'Travis Scott' (a leading 'type beat' is fine)"));
+    tb.set("limit", prop("integer", "Max results (default 3)"));
+    list.push(tool("find_type_beat_style", "Look up what '<artist or vibe> type beat' listings look like in aggregate (BPM range, minor/major share, common keys, tags) from the type-beat style bank, and get matching generate_midi settings. Statistics come from public listing metadata, never from copying a beat; check sample_size before trusting them.", tb, {"query"}));
+
     Json lp = Json::object();
     lp.set("style", enumProp({"rnb", "trap", "hiphop"}, "Optional style filter"));
     list.push(tool("list_patterns", "Summarise the rhythm / motif / progression library (built-in + learned dataset).", lp, {}));
@@ -356,6 +361,45 @@ Json callTool(const std::string& name, const Json& a, const PatternLibrary& lib)
             }
         } else if (name == "similar_to_current_clip") {
             return err("similar_to_current_clip only works inside the app; use voice_to_midi with mode 'similar' and a .wav path");
+        } else if (name == "find_type_beat_style") {
+            std::string q = a["query"].str("");
+            for (auto& c : q) c = (char) std::tolower((unsigned char) c);
+            auto pos = q.find("type beat"); if (pos != std::string::npos) q.erase(pos, 9);
+            std::vector<std::string> words; { std::string cur; for (char c : q + " ") { if (std::isalnum((unsigned char) c) || c == '\'' ) cur += c; else { if (cur.size() > 1) words.push_back(cur); cur.clear(); } } }
+            std::vector<std::pair<double, const TypeBeatStyle*>> ranked;
+            for (const auto& t : lib.typeBeats) {
+                std::string hay = t.name; for (const auto& g : t.tags) hay += " " + g;
+                for (auto& c : hay) c = (char) std::tolower((unsigned char) c);
+                double sc = 0;
+                for (const auto& w : words) if (hay.find(w) != std::string::npos) sc += (t.name.find(w) != std::string::npos ? 3.0 : 1.0);
+                if (sc > 0) ranked.push_back({sc + std::min(2.0, t.count / 20.0), &t});
+            }
+            std::stable_sort(ranked.begin(), ranked.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+            int limit = a.has("limit") ? std::max(1, std::min(10, a["limit"].integer())) : 3;
+            Json arr = Json::array();
+            for (size_t i = 0; i < ranked.size() && (int) i < limit; ++i) {
+                const TypeBeatStyle& t = *ranked[i].second;
+                Json x = Json::object();
+                x.set("name", t.name); x.set("sample_size", t.count);
+                x.set("bpm_range", std::to_string((int) t.bpmLow) + "-" + std::to_string((int) t.bpmHigh)); x.set("bpm_median", t.bpmMedian);
+                x.set("minor_share", std::round(t.minorShare * 100) / 100);
+                Json k = Json::array(); for (const auto& v : t.topKeys) k.push(v); x.set("common_keys", k);
+                Json g = Json::array(); for (const auto& v : t.tags) g.push(v); x.set("tags", g);
+                Json sg = Json::object();
+                bool drill = false, eerie = false, melodic = false, hard = false;
+                for (const auto& v : t.tags) { if (v == "drill") drill = true; if (v == "dark" || v == "evil" || v == "eerie") eerie = true; if (v == "melodic" || v == "sad" || v == "emotional") melodic = true; if (v == "hard" || v == "aggressive") hard = true; }
+                sg.set("scale", t.minorShare >= 0.5 ? (drill || eerie ? "phrygian" : (melodic ? "harmonic_minor" : "minor")) : "major");
+                if (!t.topKeys.empty()) { std::string kk = t.topKeys[0]; size_t sp = kk.find(' '); sg.set("root", kk.substr(0, sp)); }
+                sg.set("bpm", (int) std::lround(t.bpmMedian));
+                Json mix = Json::object(); mix.set("rnb", t.rnb); mix.set("trap", t.trap); mix.set("hiphop", t.hiphop); sg.set("style_mix", mix);
+                sg.set("complexity", melodic ? 0.55 : (hard ? 0.3 : 0.4));
+                sg.set("bass", t.trap >= t.rnb);
+                x.set("suggested_generate_midi_settings", sg);
+                arr.push(x);
+            }
+            out.set("styles", arr);
+            out.set("bank_size", (int) lib.typeBeats.size());
+            if (arr.size() == 0) out.set("note", lib.typeBeats.empty() ? "the type-beat style bank is empty; build it with tools/typebeats/harvest.py" : "no match; try another artist or vibe word");
         } else if (name == "list_patterns") {
             std::string st = a["style"].str("");
             int r = 0, m = 0, p = 0;

@@ -75,12 +75,20 @@ HipHopMidiProcessor::HipHopMidiProcessor()
     catch (const std::exception&) {}
     try { lib->mergeJson (hhmg::Json::parse (std::string (BinaryData::patterns_cymatics_json, (size_t) BinaryData::patterns_cymatics_jsonSize))); }
     catch (const std::exception&) {}
+    try { lib->mergeJson (hhmg::Json::parse (std::string (BinaryData::typebeat_styles_json, (size_t) BinaryData::typebeat_styles_jsonSize))); }
+    catch (const std::exception&) {}
     auto def = defaultDatasetFile();
     if (def.existsAsFile())
     {
         try { lib->mergeJson (hhmg::Json::parse (def.loadFileAsString().toStdString())); }
         catch (const std::exception&) {}
     }
+    try   // a bank you built yourself with tools/typebeats/harvest.py
+    {
+        auto tf = defaultDatasetFile().getSiblingFile ("typebeat_styles.json");
+        if (tf.existsAsFile()) lib->mergeJson (hhmg::Json::parse (tf.loadFileAsString().toStdString()));
+    }
+    catch (const std::exception&) {}
     try
     {
         auto uf = userLibraryFile();

@@ -14,6 +14,7 @@ const char* kSystemPrompt =
     "Workflow: (1) If the user mentions a MIDI file, a recording, a reference, 'this clip' or has imported/recorded/generated something, call analyze_current_clip "
     "(or analyze_midi / analyze_audio with a path) to recognise its style: key, mode, BPM, chord degrees, swing, looseness and R&B/Trap/Hip-Hop scores. "
     "When they want something like their own clip, call similar_to_current_clip (it draws on the learned reference dataset). "
+    "When they name an artist or vibe ('Metro Boomin type beat', 'dark drill'), call find_type_beat_style for the aggregate BPM/key/tag statistics of that style and use its suggested settings; say how large its sample_size is. "
     "(2) Call style_guide with the user's words (any language) for matching recipes; call find_references to find real loops with a similar "
     "key, tempo and style. (3) To combine things, call generate_midi once, taking the progression from one reference (reference_progression), "
     "the melody rhythm from another (reference_rhythm), and the sound settings from the analysis or recipe. Explicit user values always win. "
