@@ -50,7 +50,7 @@ Analysis analyzeNotes(const std::vector<Note>& chords, const std::vector<Note>& 
     struct Cand { const char* id; double prior; };
     static const Cand cands[] = {{"minor", 0.4}, {"major", 0.4}, {"dorian", 0.15}, {"mixolydian", 0.1}, {"phrygian", 0.1},
                                  {"harmonic_minor", 0.1}, {"lydian", 0.05}, {"phrygian_dominant", 0.0}};
-    double bestScore = -1e9; int bRoot = 0, bScale = findScale("minor");
+    double bestKeyScore = -1e9; int bRoot = 0, bScale = findScale("minor");
     for (int r = 0; r < 12; ++r)
         for (const auto& c : cands) {
             Scale sc{r, findScale(c.id)};
@@ -60,7 +60,7 @@ Analysis analyzeNotes(const std::vector<Note>& chords, const std::vector<Note>& 
             double bass = bassTotal > 0 ? bassHist[r] / bassTotal : 0;
             double tonicShare = total > 0 ? hist[r] / total : 0;
             double score = 20 * fit + 3.0 * bass + 1.5 * tonicShare + (firstBass == r ? 1.5 : 0) + c.prior;
-            if (score > bestScore) { bestScore = score; bRoot = r; bScale = sc.index; }
+            if (score > bestKeyScore) { bestKeyScore = score; bRoot = r; bScale = sc.index; }
         }
     a.root = bRoot; a.scale = bScale;
     const Scale scale{a.root, a.scale};

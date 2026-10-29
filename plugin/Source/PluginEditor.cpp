@@ -198,7 +198,8 @@ HipHopMidiEditor::HipHopMidiEditor (HipHopMidiProcessor& p)
         persistAiFields();
         askButton.setEnabled (false);
         setStatus ("Asking the model...");
-        proc.askAi (prompt.getText(), [safe = WeakReference<HipHopMidiEditor> (this)] (const AiBridge::Outcome& o)
+        WeakReference<HipHopMidiEditor> safe (this); // a local, not an init-capture: MSVC reads `this` there as the enclosing lambda
+        proc.askAi (prompt.getText(), [safe] (const AiBridge::Outcome& o)
         {
             if (safe == nullptr) return;
             safe->askButton.setEnabled (true);
